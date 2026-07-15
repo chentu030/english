@@ -63,6 +63,9 @@ body {
   align-items: center;
   gap: 20px;
   padding: 12px 24px;
+  padding-top: max(12px, env(safe-area-inset-top));
+  padding-left: max(24px, env(safe-area-inset-left));
+  padding-right: max(24px, env(safe-area-inset-right));
   background: var(--bg-elev);
   border-bottom: 1px solid var(--border);
   box-shadow: var(--shadow);

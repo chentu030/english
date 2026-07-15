@@ -2,8 +2,19 @@
 <html lang="zh-Hant" data-theme="light">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>快速背單字</title>
+
+  <!-- PWA：可安裝為 App、獨立視窗開啟 -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="theme-color" content="#2f6df6" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon-512.png" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="背單字" />
+
   <link rel="stylesheet" href="styles.css" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
 </head>
@@ -296,5 +307,13 @@
   <!-- Firebase / Firestore 雲端同步 -->
   <script type="module" src="db.js"></script>
   <script src="app.js"></script>
+  <!-- 註冊 Service Worker（讓網站可安裝為 App / 離線） -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').catch((e) => console.warn('SW 註冊失敗', e));
+      });
+    }
+  </script>
 </body>
 </html>
