@@ -20,6 +20,7 @@ const STUDY_MODES = [
   { id: 'context', name: '情境詞', desc: '回想常一起出現的前後文單詞', has: d => (d.context_words || []).length > 0 },
   { id: 'synonym', name: '同義詞', desc: '回想同義／近義詞', has: d => (d.synonyms || []).length > 0 },
   { id: 'phrase', name: '片語', desc: '回想相關片語與慣用語', has: d => (d.phrases || []).length > 0 },
+  { id: 'forms', name: '詞形變化', desc: '回想單複數/三態/詞性變換', has: d => (d.word_forms || []).length > 0 || (d.derivatives || []).length > 0 },
 ];
 
 // 金鑰不寫死在會被公開的程式碼裡。
@@ -62,6 +63,26 @@ function esc(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// ---- 朗讀（Web Speech API，瀏覽器即時生成，免 API）----
+function speak(text, lang = 'en-US') {
+  if (!text || !window.speechSynthesis) { toast('這個瀏覽器不支援朗讀', true); return; }
+  try {
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = lang;
+    u.rate = 0.95;
+    const voices = window.speechSynthesis.getVoices();
+    const v = voices.find(x => x.lang && x.lang.toLowerCase().startsWith(lang.slice(0, 2).toLowerCase()));
+    if (v) u.voice = v;
+    window.speechSynthesis.speak(u);
+  } catch (e) { console.error(e); }
+}
+// 產生喇叭按鈕 HTML
+function spk(text, lang = 'en-US') {
+  if (!text) return '';
+  return `<button class="speak-btn" data-speak="${esc(text)}" data-lang="${lang}" title="朗讀" type="button">🔊</button>`;
+}
+
 let toastTimer;
 function toast(msg, isErr = false) {
   const t = $('#toast');
@@ -82,6 +103,14 @@ function init() {
   migrateCards();
 
   applyTheme(localStorage.getItem(LS_THEME) || 'light');
+  // 全域喇叭朗讀（事件委派）
+  document.addEventListener('click', e => {
+    const b = e.target.closest('.speak-btn');
+    if (b) { e.stopPropagation(); speak(b.dataset.speak, b.dataset.lang || 'en-US'); }
+  });
+  // 預先載入語音清單（部分瀏覽器需要）
+  if (window.speechSynthesis) window.speechSynthesis.getVoices();
+
   bindNav();
   bindTheme();
   bindAdd();
@@ -307,6 +336,27 @@ ${rawBlock(raw)}
 - synonyms / antonyms：常見近義、反義字，各附中文意思。
 - context_words：這個字常在什麼情境出現？列出常一起出現、前後文常見的相關單詞，note 說明關聯。
 - confusing_words：拼字相近或容易搞混的字，difference 說明差異。
+只做這部分。`,
+  },
+  {
+    key: 'forms',
+    schema: {
+      type: 'object',
+      properties: {
+        word_forms: _list({ label: { type: 'string' }, form: { type: 'string' } }),
+        derivatives: _list({ word: { type: 'string' }, pos: { type: 'string' }, meaning: { type: 'string' } }),
+      },
+    },
+    prompt: (word, raw) => `你是英文單字整理老師。請只整理單字「${word}」的「詞形變化與詞性變換」，輸出繁體中文 JSON。
+${rawBlock(raw)}
+
+要求：
+- word_forms：依詞性列出所有變化形。label 用中文標籤、form 填該形式。例如：
+  - 名詞：「複數」
+  - 動詞：「第三人稱單數」「現在分詞」「過去式」「過去分詞」
+  - 形容詞／副詞：「比較級」「最高級」
+  不適用的變化就不要列。
+- derivatives：詞性變換／派生詞，列出同詞根但不同詞性的相關字，word 填單字、pos 填詞性（如 n./adj./adv.）、meaning 填中文意思。
 只做這部分。`,
   },
   {
@@ -686,8 +736,13 @@ function renderPreview(d, container, ctx) {
       ${x.pos ? `<span class="def-pos">${esc(x.pos)}</span>` : ''}
       <span class="def-zh">${esc(x.meaning_zh)}</span>
       ${x.meaning_en ? `<span class="def-en"> — ${esc(x.meaning_en)}</span>` : ''}
-      ${x.example_en ? `<div class="example">${esc(x.example_en)}<div class="ex-zh">${esc(x.example_zh || '')}</div></div>` : ''}
+      ${x.example_en ? `<div class="example">${esc(x.example_en)}${spk(x.example_en)}<div class="ex-zh">${esc(x.example_zh || '')}</div></div>` : ''}
     </div>`).join('');
+
+  const formsPills = (d.word_forms || []).length
+    ? `<div class="pill-list">${d.word_forms.map(x => `<span class="pill"><b>${esc(x.label)}</b> ${esc(x.form)}${spk(x.form)}</span>`).join('')}</div>` : '';
+  const derivPills = (d.derivatives || []).length
+    ? `<div class="pill-list">${d.derivatives.map(x => `<span class="pill"><b>${esc(x.word)}</b>${spk(x.word)}<span class="pill-zh">${esc(x.pos || '')} ${esc(x.meaning || '')}</span></span>`).join('')}</div>` : '';
 
   const mnem = (d.mnemonics || []).map(x =>
     `<div class="mnemonic"><span class="mn-type">${esc(x.type || '助記')}</span>${esc(x.content)}</div>`).join('');
@@ -707,7 +762,7 @@ function renderPreview(d, container, ctx) {
     ? `<div class="pill-list">${d.confusing_words.map(x => `<span class="pill"><b>${esc(x.word)}</b><span class="pill-zh">${esc(x.meaning || '')}${x.difference ? '｜' + esc(x.difference) : ''}</span></span>`).join('')}</div>` : '';
 
   const examples = (d.examples || []).length
-    ? d.examples.map(x => `<div class="example">${esc(x.en)}<div class="ex-zh">${esc(x.zh || '')}</div></div>`).join('') : '';
+    ? d.examples.map(x => `<div class="example">${esc(x.en)}${spk(x.en)}<div class="ex-zh">${esc(x.zh || '')}</div></div>`).join('') : '';
 
   const phon = [d.phonetic_uk && `英 ${esc(d.phonetic_uk)}`, d.phonetic_us && `美 ${esc(d.phonetic_us)}`].filter(Boolean).join('　');
 
@@ -721,9 +776,11 @@ function renderPreview(d, container, ctx) {
 
   container.innerHTML = `
     ${toolbar}
-    <div class="entry-word">${esc(d.word)}</div>
+    <div class="entry-word">${esc(d.word)}${spk(d.word)}</div>
     ${phon ? `<div class="entry-phon">${phon}</div>` : ''}
     ${sec('釋義', '📖', defs, 'base')}
+    ${sec('詞形變化', '🔤', formsPills, 'forms')}
+    ${sec('詞性變換／派生詞', '🔀', derivPills, 'forms')}
     ${sec('助記法', '💡', mnem, 'memory')}
     ${sec('詞根詞源', '🌱', roots, 'memory')}
     ${sec('搭配詞', '🔗', pairPills(d.collocations, 'phrase', 'meaning'), 'collocation')}
@@ -765,6 +822,8 @@ const ARRAY_FIELDS = {
   antonyms: { title: '↔️ 反義詞', cols: [['word', '單字'], ['meaning', '中文']] },
   context_words: { title: '🎯 情境詞', cols: [['word', '單字'], ['meaning', '中文'], ['note', '關聯']] },
   confusing_words: { title: '⚠️ 形近／易混淆', cols: [['word', '單字'], ['meaning', '中文'], ['difference', '差異']] },
+  word_forms: { title: '🔤 詞形變化', cols: [['label', '變化'], ['form', '形式']] },
+  derivatives: { title: '🔀 詞性變換', cols: [['word', '單字'], ['pos', '詞性'], ['meaning', '中文']] },
   examples: { title: '✏️ 例句庫', cols: [['en', '英文'], ['zh', '中文']] },
 };
 
@@ -813,6 +872,8 @@ function renderEditor(data, container, onChange) {
     ${arrGroup('phrases')}
     ${arrGroup('synonyms')}
     ${arrGroup('antonyms')}
+    ${arrGroup('word_forms')}
+    ${arrGroup('derivatives')}
     ${arrGroup('context_words')}
     ${arrGroup('confusing_words')}
     ${arrGroup('examples')}
@@ -1083,13 +1144,13 @@ function showCurrentCard() {
 
 function renderFaces(d, mode) {
   const phon = d.phonetic_us || d.phonetic_uk || '';
-  const wordBlock = `<div class="fc-word">${esc(d.word)}</div>${phon ? `<div class="fc-phon">${esc(phon)}</div>` : ''}`;
+  const wordBlock = `<div class="fc-word">${esc(d.word)}${spk(d.word)}</div>${phon ? `<div class="fc-phon">${esc(phon)}</div>` : ''}`;
   const defsFull = (d.definitions || []).map(x => `
     <div class="def-item">
       ${x.pos ? `<span class="def-pos">${esc(x.pos)}</span>` : ''}
       <span class="def-zh">${esc(x.meaning_zh)}</span>
       ${x.meaning_en ? `<span class="def-en"> — ${esc(x.meaning_en)}</span>` : ''}
-      ${x.example_en ? `<div class="example">${esc(x.example_en)}<div class="ex-zh">${esc(x.example_zh || '')}</div></div>` : ''}
+      ${x.example_en ? `<div class="example">${esc(x.example_en)}${spk(x.example_en)}<div class="ex-zh">${esc(x.example_zh || '')}</div></div>` : ''}
     </div>`).join('');
 
   const pairPills = (arr, k1, k2) =>
@@ -1120,6 +1181,14 @@ function renderFaces(d, mode) {
   } else if (mode === 'phrase') {
     front = wordBlock + `<div class="fc-prompt">相關的「片語」有哪些？</div>`;
     back = `<div class="entry-section"><div class="es-title">🧩 片語</div>${pairPills(d.phrases, 'phrase', 'meaning')}</div>`;
+  } else if (mode === 'forms') {
+    front = wordBlock + `<div class="fc-prompt">它的「詞形變化 / 詞性變換」有哪些？</div>`;
+    const forms = (d.word_forms || []).length
+      ? `<div class="pill-list">${d.word_forms.map(x => `<span class="pill"><b>${esc(x.label)}</b> ${esc(x.form)}${spk(x.form)}</span>`).join('')}</div>` : '';
+    const derivs = (d.derivatives || []).length
+      ? `<div class="pill-list">${d.derivatives.map(x => `<span class="pill"><b>${esc(x.word)}</b>${spk(x.word)}<span class="pill-zh">${esc(x.pos || '')} ${esc(x.meaning || '')}</span></span>`).join('')}</div>` : '';
+    back = (forms ? `<div class="entry-section"><div class="es-title">🔤 詞形變化</div>${forms}</div>` : '')
+      + (derivs ? `<div class="entry-section"><div class="es-title">🔀 詞性變換／派生詞</div>${derivs}</div>` : '');
   }
   back += notesBlock(d);
   return { front, back };
