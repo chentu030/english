@@ -1,0 +1,23 @@
+rules_version = '2';
+
+// 貼到 Firebase Console → Firestore Database → 規則(Rules) → 發布
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 每位使用者專屬資料：只有本人（登入後）能讀寫自己的所有語言卡片
+    // 路徑：users/{uid}/cards、users/{uid}/cards_de … 及其底下所有文件
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // 舊的「共用」頂層集合（cards、cards_de、cards_ja …）
+    // 僅供 lcy101120@gmail.com 首次登入時「歸戶」讀取；任何人都不可寫入。
+    // 歸戶完成後，可把下面這段整段刪除，讓舊集合完全不可存取。
+    match /{coll}/{doc} {
+      allow read: if request.auth != null
+                  && request.auth.token.email == 'lcy101120@gmail.com'
+                  && coll.matches('cards.*');
+      allow write: if false;
+    }
+  }
+}

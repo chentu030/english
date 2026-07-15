@@ -142,7 +142,6 @@ body {
 .theme-toggle { margin-left: 12px; }
 
 .theme-toggle {
-  margin-left: auto;
   border: 1px solid var(--border);
   background: var(--bg-soft);
   width: 40px; height: 40px;
