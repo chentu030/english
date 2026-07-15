@@ -457,8 +457,10 @@ function bindAdd() {
   });
   $('#saveCardBtn').addEventListener('click', onSaveCard);
   $('#previewArea').addEventListener('click', e => {
-    const btn = e.target.closest('.seg-regen');
-    if (btn) regenerateSegment(btn.dataset.seg, btn);
+    const regen = e.target.closest('.seg-regen');
+    if (regen) { regenerateSegment(regen.dataset.seg, regen); return; }
+    const edit = e.target.closest('[data-edit-card]');
+    if (edit) openCardEditor();
   });
   // 檢視已存卡片時，編輯原文會自動存回該卡
   $('#rawInput').addEventListener('input', () => {
@@ -668,6 +670,7 @@ let currentEntry = null; // { data, container, word, raw, onChange }
 
 function renderPreview(d, container, ctx) {
   const editable = !!(ctx && ctx.editable);
+  container.oninput = null; container.onclick = null; container._onDone = null; // 清掉編輯器殘留的處理器
   if (editable) currentEntry = { data: d, container, word: ctx.word || d.word, raw: ctx.raw || '', onChange: ctx.onChange, card: ctx.card || null };
 
   // sec：editable 時即使空白也會顯示區塊與「重新生成」按鈕
@@ -708,7 +711,16 @@ function renderPreview(d, container, ctx) {
 
   const phon = [d.phonetic_uk && `英 ${esc(d.phonetic_uk)}`, d.phonetic_us && `美 ${esc(d.phonetic_us)}`].filter(Boolean).join('　');
 
+  const notesHtml = (d.notes && d.notes.trim())
+    ? `<div class="entry-section"><div class="es-title">📝 我的筆記</div><div class="example" style="white-space:pre-wrap">${esc(d.notes)}</div></div>`
+    : (editable ? `<div class="entry-section"><div class="es-title">📝 我的筆記</div><div class="seg-empty">（尚無筆記，可按上方「手動編輯」新增）</div></div>` : '');
+
+  const toolbar = editable
+    ? `<div class="editor-toolbar"><button class="btn small" data-edit-card>✏️ 手動編輯整張卡</button></div>`
+    : '';
+
   container.innerHTML = `
+    ${toolbar}
     <div class="entry-word">${esc(d.word)}</div>
     ${phon ? `<div class="entry-phon">${phon}</div>` : ''}
     ${sec('釋義', '📖', defs, 'base')}
@@ -721,7 +733,135 @@ function renderPreview(d, container, ctx) {
     ${sec('情境詞（常一起出現）', '🎯', ctxPills, 'relation')}
     ${sec('形近／易混淆', '⚠️', confus, 'relation')}
     ${sec('例句庫', '✏️', examples, 'examples')}
+    ${notesHtml}
   `;
+}
+
+// 從檢視切到完整編輯器
+function openCardEditor() {
+  if (!currentEntry) return;
+  const { data, container } = currentEntry;
+  container._onDone = () => renderPreview(data, container, {
+    editable: true, word: data.word, raw: currentEntry.raw,
+    onChange: currentEntry.onChange, card: currentEntry.card,
+  });
+  renderEditor(data, container, () => {
+    if (currentEntry.onChange) currentEntry.onChange();     // 存 localStorage（已存卡會 saveCards）
+    if (currentEntry.card) debouncedCloudSave(currentEntry.card);
+  });
+}
+
+/* =========================================================================
+   卡片完整編輯器（每個欄位都可手動編輯）
+   ========================================================================= */
+// 陣列型欄位：欄位名 → [ [key, 標籤], ... ]
+const ARRAY_FIELDS = {
+  definitions: { title: '📖 釋義', cols: [['pos', '詞性'], ['meaning_zh', '中文'], ['meaning_en', '英文'], ['example_en', '例句'], ['example_zh', '例句中譯']] },
+  mnemonics: { title: '💡 助記法', cols: [['type', '類型'], ['content', '內容']] },
+  roots: { title: '🌱 詞根', cols: [['part', '詞根/詞綴'], ['meaning', '含義']] },
+  collocations: { title: '🔗 搭配詞', cols: [['phrase', '搭配'], ['meaning', '中文']] },
+  phrases: { title: '🧩 片語', cols: [['phrase', '片語'], ['meaning', '中文']] },
+  synonyms: { title: '🟰 同義詞', cols: [['word', '單字'], ['meaning', '中文']] },
+  antonyms: { title: '↔️ 反義詞', cols: [['word', '單字'], ['meaning', '中文']] },
+  context_words: { title: '🎯 情境詞', cols: [['word', '單字'], ['meaning', '中文'], ['note', '關聯']] },
+  confusing_words: { title: '⚠️ 形近／易混淆', cols: [['word', '單字'], ['meaning', '中文'], ['difference', '差異']] },
+  examples: { title: '✏️ 例句庫', cols: [['en', '英文'], ['zh', '中文']] },
+};
+
+function attr(v) { return esc(v ?? ''); }
+
+function renderEditor(data, container, onChange) {
+  const arrGroup = (field) => {
+    const cfg = ARRAY_FIELDS[field];
+    const rows = (data[field] || []).map((item, i) => {
+      const cells = cfg.cols.map(([k, label]) =>
+        `<label class="ed-cell"><span>${label}</span><input class="ed-input" data-arr="${field}" data-idx="${i}" data-key="${k}" value="${attr(item[k])}" /></label>`
+      ).join('');
+      return `<div class="ed-row" style="grid-template-columns:repeat(${cfg.cols.length},1fr) auto">
+        ${cells}
+        <button class="ed-del-row" data-del="${field}" data-idx="${i}" title="刪除這列">✕</button>
+      </div>`;
+    }).join('');
+    return `<div class="ed-group">
+      <div class="ed-title">${cfg.title}</div>
+      ${rows}
+      <button class="ed-add" data-add="${field}">＋ 新增一列</button>
+    </div>`;
+  };
+
+  container.innerHTML = `
+    <div class="editor-toolbar">
+      <button class="btn primary small" data-editor-done>✓ 完成編輯（回檢視）</button>
+      <span class="ed-saved" data-saved hidden>已自動儲存</span>
+    </div>
+    <div class="ed-group">
+      <div class="ed-title">基本</div>
+      <label class="ed-field"><span>單字</span><input class="ed-input" data-field="word" value="${attr(data.word)}" /></label>
+      <div class="ed-basic-grid">
+        <label class="ed-field"><span>英式音標</span><input class="ed-input" data-field="phonetic_uk" value="${attr(data.phonetic_uk)}" /></label>
+        <label class="ed-field"><span>美式音標</span><input class="ed-input" data-field="phonetic_us" value="${attr(data.phonetic_us)}" /></label>
+      </div>
+    </div>
+    ${arrGroup('definitions')}
+    ${arrGroup('mnemonics')}
+    ${arrGroup('roots')}
+    <div class="ed-group">
+      <div class="ed-title">🌱 詞源</div>
+      <textarea class="ed-area" data-field="etymology" rows="2">${esc(data.etymology || '')}</textarea>
+    </div>
+    ${arrGroup('collocations')}
+    ${arrGroup('phrases')}
+    ${arrGroup('synonyms')}
+    ${arrGroup('antonyms')}
+    ${arrGroup('context_words')}
+    ${arrGroup('confusing_words')}
+    ${arrGroup('examples')}
+    <div class="ed-group">
+      <div class="ed-title">📝 我的筆記</div>
+      <textarea class="ed-area" data-field="notes" rows="4" placeholder="寫下自己的記憶方式、例句、易錯點…">${esc(data.notes || '')}</textarea>
+    </div>
+  `;
+
+  const flashSaved = () => {
+    const s = container.querySelector('[data-saved]');
+    if (!s) return;
+    s.hidden = false;
+    clearTimeout(s._t);
+    s._t = setTimeout(() => { s.hidden = true; }, 1200);
+  };
+  const commit = () => { if (onChange) onChange(); flashSaved(); };
+
+  container.oninput = e => {
+    const t = e.target;
+    if (t.dataset.field) { data[t.dataset.field] = t.value; commit(); }
+    else if (t.dataset.arr) {
+      const f = t.dataset.arr, i = +t.dataset.idx;
+      if (!Array.isArray(data[f])) data[f] = [];
+      data[f][i] = data[f][i] || {};
+      data[f][i][t.dataset.key] = t.value;
+      commit();
+    }
+  };
+  container.onclick = e => {
+    const add = e.target.closest('[data-add]');
+    const del = e.target.closest('[data-del]');
+    const done = e.target.closest('[data-editor-done]');
+    if (add) {
+      const f = add.dataset.add;
+      if (!Array.isArray(data[f])) data[f] = [];
+      data[f].push({});
+      commit();
+      renderEditor(data, container, onChange);
+      const inputs = container.querySelectorAll(`[data-arr="${f}"]`);
+      if (inputs.length) inputs[inputs.length - ARRAY_FIELDS[f].cols.length].focus();
+    } else if (del) {
+      data[del.dataset.del].splice(+del.dataset.idx, 1);
+      commit();
+      renderEditor(data, container, onChange);
+    } else if (done && container._onDone) {
+      container._onDone();
+    }
+  };
 }
 
 /* =========================================================================
@@ -915,6 +1055,13 @@ function startStudy() {
 function currentItem() { return session.queue[session.idx]; }
 
 function showCurrentCard() {
+  // 換卡時關閉編輯面板
+  if (studyEditing) {
+    studyEditing = false;
+    $('#studyEditor').hidden = true;
+    $('#studyEditor').innerHTML = '';
+    $('#editCardBtn').textContent = '✏️ 編輯';
+  }
   const item = currentItem();
   const card = cards.find(c => c.id === item.cardId);
   const mode = STUDY_MODES.find(m => m.id === item.mode);
@@ -974,6 +1121,7 @@ function renderFaces(d, mode) {
     front = wordBlock + `<div class="fc-prompt">相關的「片語」有哪些？</div>`;
     back = `<div class="entry-section"><div class="es-title">🧩 片語</div>${pairPills(d.phrases, 'phrase', 'meaning')}</div>`;
   }
+  back += notesBlock(d);
   return { front, back };
 }
 
@@ -984,9 +1132,43 @@ function mnemBlock(d) {
     + `</div>`;
 }
 
+function notesBlock(d) {
+  if (!(d.notes && d.notes.trim())) return '';
+  return `<div class="entry-section" style="margin-top:14px"><div class="es-title">📝 我的筆記</div>`
+    + `<div class="example" style="white-space:pre-wrap">${esc(d.notes)}</div></div>`;
+}
+
+let studyEditing = false;
+
+function toggleStudyEditor() {
+  const panel = $('#studyEditor');
+  studyEditing = !studyEditing;
+  if (!studyEditing) {
+    panel.hidden = true;
+    panel.innerHTML = '';
+    $('#editCardBtn').textContent = '✏️ 編輯';
+    showCurrentCard(); // 用最新內容重繪卡面
+    renderDeck();
+    return;
+  }
+  const item = currentItem();
+  if (!item) return;
+  const card = cards.find(c => c.id === item.cardId);
+  if (!card) return;
+  $('#editCardBtn').textContent = '✓ 編輯完成';
+  panel.hidden = false;
+  panel._onDone = () => toggleStudyEditor();
+  renderEditor(card.data, panel, () => {
+    saveCards();
+    debouncedCloudSave(card);
+  });
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
 function bindStudyControls() {
   $('#showAnswerBtn').addEventListener('click', revealAnswer);
   $('#endStudyBtn').addEventListener('click', endStudy);
+  $('#editCardBtn').addEventListener('click', toggleStudyEditor);
   $('#rateBtns').addEventListener('click', e => {
     const b = e.target.closest('[data-rate]');
     if (b) rateCard(parseInt(b.dataset.rate, 10));
