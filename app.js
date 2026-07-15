@@ -30,6 +30,18 @@ const STUDY_MODES = [
   { id: 'spelling', name: '拼字（克漏字）', desc: '聽發音＋看例句填空，拼出單字', has: d => !!d.word },
 ];
 
+// 基礎模式：其他模式要先熟悉這兩個之一才會解鎖
+const BASIC_MODES = ['en2zh', 'zh2en'];
+// 這張卡是否已在某個基礎模式熟悉（成功複習過至少一次，未在最近一次按「重來」）
+function cardBasicLearned(card) {
+  return BASIC_MODES.some(id => (card.srs[id]?.reps || 0) >= 1);
+}
+// 該模式對這張卡是否已解鎖
+function modeUnlocked(card, modeId) {
+  if (BASIC_MODES.includes(modeId)) return true;
+  return cardBasicLearned(card);
+}
+
 // 金鑰不寫死在會被公開的程式碼裡。
 // 本機開發時可放在 config.local.js（已被 .gitignore 忽略）：window.DEFAULT_KEYS = [...]
 // 部署後（如 Vercel）請到「設定」頁輸入金鑰，會存在該裝置的瀏覽器。
@@ -1152,7 +1164,7 @@ function isDue(state) { return (state.due || 0) <= now(); }
 function isNew(state) { return (state.reps || 0) === 0 && (state.due || 0) === 0; }
 
 function cardDueCount(card) {
-  return STUDY_MODES.filter(m => m.has(card.data) && isDue(card.srs[m.id])).length;
+  return STUDY_MODES.filter(m => m.has(card.data) && modeUnlocked(card, m.id) && isDue(card.srs[m.id])).length;
 }
 
 /* ---------------------- 資料夾 ---------------------- */
@@ -1358,6 +1370,7 @@ function renderDeck() {
   cards.forEach(c => {
     STUDY_MODES.forEach(m => {
       if (!m.has(c.data)) return;
+      if (!modeUnlocked(c, m.id)) return; // 未解鎖的進階模式不計入
       const s = c.srs[m.id];
       if (isNew(s)) newTotal++;
       else if (isDue(s)) dueTotal++;
@@ -1452,15 +1465,20 @@ function renderModeGrid() {
   const grid = $('#modeGrid');
   const prevSelected = grid.dataset.init ? getSelectedModes() : ['en2zh', 'spelling'];
   grid.innerHTML = STUDY_MODES.map(m => {
-    const dueCount = cards.filter(c => m.has(c.data) && (isDue(c.srs[m.id]))).length;
+    const avail = cards.filter(c => m.has(c.data) && modeUnlocked(c, m.id));
+    const dueCount = avail.filter(c => isDue(c.srs[m.id])).length;
+    const lockedCount = BASIC_MODES.includes(m.id) ? 0
+      : cards.filter(c => m.has(c.data) && !modeUnlocked(c, m.id)).length;
     const checked = prevSelected.includes(m.id) ? 'checked' : '';
+    const countHtml = `待複習 ${dueCount}`
+      + (lockedCount > 0 ? ` <span class="mi-lock">🔒 ${lockedCount} 待解鎖</span>` : '');
     return `
       <label class="mode-item ${checked ? 'on' : ''}">
         <input type="checkbox" value="${m.id}" ${checked} />
         <div>
-          <div class="mi-name">${m.name}</div>
+          <div class="mi-name">${m.name}${BASIC_MODES.includes(m.id) ? '' : ' <span class="mi-badge">進階</span>'}</div>
           <div class="mi-desc">${m.desc}</div>
-          <div class="mi-count">待複習 ${dueCount}</div>
+          <div class="mi-count">${countHtml}</div>
         </div>
       </label>`;
   }).join('');
@@ -1504,15 +1522,21 @@ function startStudy() {
     modes.forEach(mid => {
       const m = STUDY_MODES.find(x => x.id === mid);
       if (!m.has(c.data)) return;
+      if (!modeUnlocked(c, mid)) return; // 進階模式要先熟悉英→中或中→英
       if (scope === 'due' && !isDue(c.srs[mid])) return;
       queue.push({ cardId: c.id, mode: mid });
     });
   });
 
   if (queue.length === 0) {
-    $('#studySetupHint').textContent = scope === 'due'
-      ? '目前沒有到期的卡片，選「全部卡片」或換個資料夾吧！'
-      : '沒有可背誦的卡片，先去新增單字吧！';
+    const onlyAdvanced = modes.every(mid => !BASIC_MODES.includes(mid));
+    if (onlyAdvanced) {
+      $('#studySetupHint').textContent = '這些是進階模式，需要先用「英→中」或「中→英」把單字背熟後才會解鎖喔！';
+    } else {
+      $('#studySetupHint').textContent = scope === 'due'
+        ? '目前沒有到期的卡片，選「全部卡片」或換個資料夾吧！'
+        : '沒有可背誦的卡片，先去新增單字吧！';
+    }
     return;
   }
   $('#studySetupHint').textContent = '';
