@@ -30,6 +30,7 @@ const DEFAULT_KEYS = (typeof window !== 'undefined' && Array.isArray(window.DEFA
 const DEFAULT_SETTINGS = {
   apiKeys: DEFAULT_KEYS.slice(),
   model: 'gemini-3-flash-preview',
+  accent: 'us', // us | uk
 };
 
 let keyIndex = 0;          // 金鑰輪詢游標
@@ -69,8 +70,10 @@ function esc(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// ---- 朗讀（Web Speech API，瀏覽器即時生成，免 API）----
-function speak(text, lang = 'en-US') {
+// ---- 朗讀 ----
+// 句子：用瀏覽器 Web Speech API（即時生成）
+function speak(text, lang) {
+  lang = lang || (settings.accent === 'uk' ? 'en-GB' : 'en-US');
   if (!text || !window.speechSynthesis) { toast('這個瀏覽器不支援朗讀', true); return; }
   try {
     window.speechSynthesis.cancel();
@@ -78,16 +81,59 @@ function speak(text, lang = 'en-US') {
     u.lang = lang;
     u.rate = 0.95;
     const voices = window.speechSynthesis.getVoices();
-    const v = voices.find(x => x.lang && x.lang.toLowerCase().startsWith(lang.slice(0, 2).toLowerCase()));
-    if (v) u.voice = v;
+    // 優先挑高品質（Google / Microsoft）且語系相符的語音
+    const same = voices.filter(x => x.lang && x.lang.toLowerCase().startsWith(lang.slice(0, 2).toLowerCase()));
+    const best = same.find(x => x.lang.toLowerCase() === lang.toLowerCase() && /google|microsoft|natural/i.test(x.name))
+      || same.find(x => x.lang.toLowerCase() === lang.toLowerCase())
+      || same[0];
+    if (best) u.voice = best;
     window.speechSynthesis.speak(u);
   } catch (e) { console.error(e); }
 }
-// 產生喇叭按鈕 HTML
-function spk(text, lang = 'en-US') {
-  if (!text) return '';
-  return `<button class="speak-btn" data-speak="${esc(text)}" data-lang="${lang}" title="朗讀" type="button">🔊</button>`;
+
+// 單詞：優先播放真人錄音字典發音，抓不到才退回瀏覽器語音
+const wordAudioCache = new Map(); // word -> {us,uk,any} 或 null
+async function speakWord(word) {
+  const w = (word || '').trim();
+  if (!w) return;
+  const key = w.toLowerCase();
+  let entry = wordAudioCache.get(key);
+  if (entry === undefined) {
+    entry = null;
+    try {
+      const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(key)}`);
+      if (res.ok) {
+        const data = await res.json();
+        const found = { us: '', uk: '', any: '' };
+        (data || []).forEach(en => (en.phonetics || []).forEach(p => {
+          if (!p.audio) return;
+          if (!found.any) found.any = p.audio;
+          const u = p.audio.toLowerCase();
+          if (u.includes('-us.') && !found.us) found.us = p.audio;
+          if (u.includes('-uk.') && !found.uk) found.uk = p.audio;
+        }));
+        if (found.any) entry = found;
+      }
+    } catch (e) { /* 網路錯誤就退回語音 */ }
+    wordAudioCache.set(key, entry);
+  }
+  if (entry) {
+    const pref = settings.accent === 'uk' ? (entry.uk || entry.us || entry.any) : (entry.us || entry.uk || entry.any);
+    try {
+      const audio = new Audio(pref.startsWith('//') ? 'https:' + pref : pref);
+      audio.play().catch(() => speak(w));
+      return;
+    } catch { /* 落到語音 */ }
+  }
+  speak(w);
 }
+
+// 喇叭按鈕：isWord=true 走字典發音
+function spk(text, lang, isWord) {
+  if (!text) return '';
+  return `<button class="speak-btn" data-speak="${esc(text)}"${isWord ? ' data-word="1"' : ''}${lang ? ` data-lang="${lang}"` : ''} title="朗讀" type="button">🔊</button>`;
+}
+function spkw(word) { return spk(word, '', true); }
 
 let toastTimer;
 function toast(msg, isErr = false) {
@@ -112,7 +158,11 @@ function init() {
   // 全域喇叭朗讀（事件委派）
   document.addEventListener('click', e => {
     const b = e.target.closest('.speak-btn');
-    if (b) { e.stopPropagation(); speak(b.dataset.speak, b.dataset.lang || 'en-US'); }
+    if (b) {
+      e.stopPropagation();
+      if (b.dataset.word) speakWord(b.dataset.speak);
+      else speak(b.dataset.speak, b.dataset.lang || '');
+    }
   });
   // 預先載入語音清單（部分瀏覽器需要）
   if (window.speechSynthesis) window.speechSynthesis.getVoices();
@@ -129,6 +179,7 @@ function init() {
   // 回填設定畫面
   $('#apiKeysInput').value = (settings.apiKeys || []).join('\n');
   $('#modelSelect').value = settings.model;
+  $('#accentSelect').value = settings.accent || 'us';
 
   renderDeck();
   renderModeGrid();
@@ -760,9 +811,9 @@ function renderPreview(d, container, ctx) {
     </div>`).join('');
 
   const formsPills = (d.word_forms || []).length
-    ? `<div class="pill-list">${d.word_forms.map(x => `<span class="pill"><b>${esc(x.label)}</b> ${esc(x.form)}${spk(x.form)}</span>`).join('')}</div>` : '';
+    ? `<div class="pill-list">${d.word_forms.map(x => `<span class="pill"><b>${esc(x.label)}</b> ${esc(x.form)}${spkw(x.form)}</span>`).join('')}</div>` : '';
   const derivPills = (d.derivatives || []).length
-    ? `<div class="pill-list">${d.derivatives.map(x => `<span class="pill"><b>${esc(x.word)}</b>${spk(x.word)}<span class="pill-zh">${esc(x.pos || '')} ${esc(x.meaning || '')}</span></span>`).join('')}</div>` : '';
+    ? `<div class="pill-list">${d.derivatives.map(x => `<span class="pill"><b>${esc(x.word)}</b>${spkw(x.word)}<span class="pill-zh">${esc(x.pos || '')} ${esc(x.meaning || '')}</span></span>`).join('')}</div>` : '';
 
   const mnem = (d.mnemonics || []).map(x =>
     `<div class="mnemonic"><span class="mn-type">${esc(x.type || '助記')}</span>${esc(x.content)}</div>`).join('');
@@ -796,7 +847,7 @@ function renderPreview(d, container, ctx) {
 
   container.innerHTML = `
     ${toolbar}
-    <div class="entry-word">${esc(d.word)}${spk(d.word)}</div>
+    <div class="entry-word">${esc(d.word)}${spkw(d.word)}</div>
     ${phon ? `<div class="entry-phon">${phon}</div>` : ''}
     ${sec('釋義', '📖', defs, 'base')}
     ${sec('詞形變化', '🔤', formsPills, 'forms')}
@@ -1164,7 +1215,7 @@ function showCurrentCard() {
 
 function renderFaces(d, mode) {
   const phon = d.phonetic_us || d.phonetic_uk || '';
-  const wordBlock = `<div class="fc-word">${esc(d.word)}${spk(d.word)}</div>${phon ? `<div class="fc-phon">${esc(phon)}</div>` : ''}`;
+  const wordBlock = `<div class="fc-word">${esc(d.word)}${spkw(d.word)}</div>${phon ? `<div class="fc-phon">${esc(phon)}</div>` : ''}`;
   const defsFull = (d.definitions || []).map(x => `
     <div class="def-item">
       ${x.pos ? `<span class="def-pos">${esc(x.pos)}</span>` : ''}
@@ -1204,9 +1255,9 @@ function renderFaces(d, mode) {
   } else if (mode === 'forms') {
     front = wordBlock + `<div class="fc-prompt">它的「詞形變化 / 詞性變換」有哪些？</div>`;
     const forms = (d.word_forms || []).length
-      ? `<div class="pill-list">${d.word_forms.map(x => `<span class="pill"><b>${esc(x.label)}</b> ${esc(x.form)}${spk(x.form)}</span>`).join('')}</div>` : '';
+      ? `<div class="pill-list">${d.word_forms.map(x => `<span class="pill"><b>${esc(x.label)}</b> ${esc(x.form)}${spkw(x.form)}</span>`).join('')}</div>` : '';
     const derivs = (d.derivatives || []).length
-      ? `<div class="pill-list">${d.derivatives.map(x => `<span class="pill"><b>${esc(x.word)}</b>${spk(x.word)}<span class="pill-zh">${esc(x.pos || '')} ${esc(x.meaning || '')}</span></span>`).join('')}</div>` : '';
+      ? `<div class="pill-list">${d.derivatives.map(x => `<span class="pill"><b>${esc(x.word)}</b>${spkw(x.word)}<span class="pill-zh">${esc(x.pos || '')} ${esc(x.meaning || '')}</span></span>`).join('')}</div>` : '';
     back = (forms ? `<div class="entry-section"><div class="es-title">🔤 詞形變化</div>${forms}</div>` : '')
       + (derivs ? `<div class="entry-section"><div class="es-title">🔀 詞性變換／派生詞</div>${derivs}</div>` : '');
   }
@@ -1369,6 +1420,7 @@ function bindSettings() {
   $('#saveSettingsBtn').addEventListener('click', () => {
     settings.apiKeys = $('#apiKeysInput').value.split('\n').map(k => k.trim()).filter(Boolean);
     settings.model = $('#modelSelect').value;
+    settings.accent = $('#accentSelect').value;
     keyIndex = 0;
     saveSettings();
     $('#settingsStatus').textContent = `✅ 已儲存（${settings.apiKeys.length} 組金鑰）`;

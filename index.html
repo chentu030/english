@@ -186,6 +186,14 @@
         <span class="field-help">金鑰只存在你自己的瀏覽器（localStorage），不會上傳到任何伺服器。一律使用 <b>Vertex AI 通道</b>（<code>aiplatform.googleapis.com</code>），請填入 <code>AQ.</code> 開頭的 Vertex AI Express 金鑰。</span>
       </label>
       <label class="field">
+        <span class="field-label">單詞發音口音</span>
+        <select id="accentSelect">
+          <option value="us">美式（US）</option>
+          <option value="uk">英式（UK）</option>
+        </select>
+        <span class="field-help">單詞優先播放真人錄音字典發音；抓不到時才用瀏覽器語音。句子一律用瀏覽器語音。</span>
+      </label>
+      <label class="field">
         <span class="field-label">模型</span>
         <select id="modelSelect">
           <option value="gemini-3-flash-preview">gemini-3-flash-preview（Vertex，推薦）</option>
