@@ -6,6 +6,9 @@ gemini api.txt
 gemini幫忙想記憶方法.txt
 歐路詞典複製的內容長相.txt
 
+# 暫存
+COMMIT_MSG.tmp
+
 # 系統/編輯器
 .DS_Store
 Thumbs.db
