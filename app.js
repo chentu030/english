@@ -1550,7 +1550,7 @@ function startStudy() {
   // 限制本次數量
   if (limit > 0 && queue.length > limit) queue = queue.slice(0, limit);
 
-  session = { queue, idx: 0, reviewed: 0, total: queue.length, results: [] };
+  session = { queue, idx: 0, reviewed: 0, total: queue.length, results: [], modes, scope };
   $('#studySetup').hidden = true;
   $('#studyDone').hidden = true;
   $('#studyCard').hidden = false;
@@ -1558,6 +1558,23 @@ function startStudy() {
 }
 
 function currentItem() { return session.queue[session.idx]; }
+
+// 某張卡在基礎模式熟悉後，把本輪已勾選、剛解鎖的進階模式補進佇列
+function enqueueUnlockedModes(card) {
+  if (!session || !session.modes) return;
+  if (!cardBasicLearned(card)) return;
+  session.modes.forEach(mid => {
+    if (BASIC_MODES.includes(mid)) return;
+    const m = STUDY_MODES.find(x => x.id === mid);
+    if (!m || !m.has(card.data)) return;
+    if (!modeUnlocked(card, mid)) return;
+    // 已在佇列或本輪已做過就略過
+    if (session.queue.some(q => q.cardId === card.id && q.mode === mid)) return;
+    if (session.results.some(r => r.cardId === card.id && r.mode === mid)) return;
+    session.queue.push({ cardId: card.id, mode: mid });
+    session.total++;
+  });
+}
 
 function showCurrentCard() {
   // 換卡時關閉編輯面板
@@ -1808,6 +1825,8 @@ function rateCard(rate) {
     s.reps += 1;
     s.interval = days;
     s.due = now() + days * DAY;
+    // 基礎模式一旦熟悉，立刻把這張卡「本輪已勾選」的進階模式補進佇列
+    if (BASIC_MODES.includes(item.mode)) enqueueUnlockedModes(card);
   }
   saveCards();
   cloudUpsert(card);
