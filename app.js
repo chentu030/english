@@ -21,6 +21,7 @@ const STUDY_MODES = [
   { id: 'synonym', name: '同義詞', desc: '回想同義／近義詞', has: d => (d.synonyms || []).length > 0 },
   { id: 'phrase', name: '片語', desc: '回想相關片語與慣用語', has: d => (d.phrases || []).length > 0 },
   { id: 'forms', name: '詞形變化', desc: '回想單複數/三態/詞性變換', has: d => (d.word_forms || []).length > 0 || (d.derivatives || []).length > 0 },
+  { id: 'spelling', name: '拼字（克漏字）', desc: '聽發音＋看例句填空，拼出單字', has: d => !!d.word },
 ];
 
 // 金鑰不寫死在會被公開的程式碼裡。
@@ -1211,6 +1212,29 @@ function showCurrentCard() {
   $('#rateBtns').hidden = true;
 
   updateRateLabels(card.srs[item.mode]);
+
+  if (item.mode === 'spelling') {
+    const inp = $('#spellInput');
+    if (inp) {
+      setTimeout(() => inp.focus(), 50);
+      inp.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); if (!$('#showAnswerBtn').hidden) revealAnswer(); }
+      });
+    }
+    speakWord(card.data.word); // 自動播放一次發音（若被瀏覽器擋下，可按「播放」）
+  }
+}
+
+function escapeReg(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// 找一句包含此單字的例句，用於克漏字
+function clozeSentence(d) {
+  const cands = [];
+  (d.definitions || []).forEach(x => { if (x.example_en) cands.push({ en: x.example_en, zh: x.example_zh }); });
+  (d.examples || []).forEach(x => { if (x.en) cands.push({ en: x.en, zh: x.zh }); });
+  if (!cands.length) return null;
+  const re = new RegExp('\\b' + escapeReg((d.word || '').trim()) + '\\b', 'i');
+  return cands.find(c => re.test(c.en)) || cands[0];
 }
 
 function renderFaces(d, mode) {
@@ -1252,6 +1276,23 @@ function renderFaces(d, mode) {
   } else if (mode === 'phrase') {
     front = wordBlock + `<div class="fc-prompt">相關的「片語」有哪些？</div>`;
     back = `<div class="entry-section"><div class="es-title">🧩 片語</div>${pairPills(d.phrases, 'phrase', 'meaning')}</div>`;
+  } else if (mode === 'spelling') {
+    const sent = clozeSentence(d);
+    const zhHint = (d.definitions || []).map(x => x.meaning_zh).filter(Boolean).join('；');
+    let clozeHtml = '';
+    if (sent) {
+      const re = new RegExp('\\b' + escapeReg((d.word || '').trim()) + '\\b', 'gi');
+      clozeHtml = `<div class="spell-cloze">${esc(sent.en).replace(re, '<span class="blank">＿＿＿＿</span>')}</div>`
+        + (sent.zh ? `<div class="spell-hint-zh">${esc(sent.zh)}</div>` : '');
+    }
+    front = `<div class="spell-top">🔊 聽發音，拼出單字 <button class="speak-btn" data-speak="${esc(d.word)}" data-word="1" type="button" title="再聽一次">🔁 播放</button></div>`
+      + clozeHtml
+      + `<input id="spellInput" class="spell-input" placeholder="在此輸入單字…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />`
+      + (zhHint ? `<div class="fc-prompt">提示：${esc(zhHint)}</div>` : '')
+      + `<div class="fc-prompt">按 Enter 或「顯示答案」對答案</div>`;
+    back = wordBlock;
+    if (sent) back += `<div class="entry-section" style="margin-top:12px"><div class="example">${esc(sent.en)}${spk(sent.en)}<div class="ex-zh">${esc(sent.zh || '')}</div></div></div>`;
+    back += mnemBlock(d);
   } else if (mode === 'forms') {
     front = wordBlock + `<div class="fc-prompt">它的「詞形變化 / 詞性變換」有哪些？</div>`;
     const forms = (d.word_forms || []).length
@@ -1327,6 +1368,17 @@ function bindStudyControls() {
 }
 
 function revealAnswer() {
+  const item = currentItem();
+  if (item && item.mode === 'spelling') {
+    const inp = $('#spellInput');
+    const card = cards.find(c => c.id === item.cardId);
+    const ans = (inp ? inp.value : '').trim();
+    const correct = ans.toLowerCase() === (card.data.word || '').trim().toLowerCase();
+    const result = ans
+      ? `<div class="spell-result ${correct ? 'ok' : 'no'}">${correct ? '✓ 拼對了！' : '✗ 你的答案：' + esc(ans)}</div>`
+      : `<div class="spell-result no">（未作答）</div>`;
+    $('#cardBack').innerHTML = result + $('#cardBack').innerHTML;
+  }
   $('#cardBack').hidden = false;
   $('#showAnswerBtn').hidden = true;
   $('#rateBtns').hidden = false;
