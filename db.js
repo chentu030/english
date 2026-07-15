@@ -19,7 +19,8 @@ const firebaseConfig = {
 };
 
 // 所有卡片存在此集合（不需登入，靠 Firestore 規則允許讀寫）
-const COLLECTION = 'cards';
+// 依語言切換：英文用 'cards'、德文用 'cards_de'
+let COLLECTION = 'cards';
 
 let db;
 try {
@@ -33,6 +34,9 @@ const cardsCol = () => collection(db, COLLECTION);
 
 window.Cloud = {
   enabled: !!db,
+
+  // 切換要同步的集合（語言切換時呼叫）
+  setCollection(name) { COLLECTION = name || 'cards'; },
 
   // 訂閱雲端卡片變動；每次變動都會呼叫 onCards(array)
   start(onCards) {

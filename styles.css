@@ -95,8 +95,19 @@ body {
 .nav-btn:hover { background: var(--bg-soft); color: var(--text); }
 .nav-btn.active { background: var(--primary-soft); color: var(--primary); }
 
-.cloud-status { margin-left: auto; font-size: 12px; color: var(--text-mute); white-space: nowrap; }
+.lang-switch { margin-left: auto; display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.lang-switch .lang-btn {
+  border: none; background: var(--bg-soft); color: var(--text-soft);
+  padding: 8px 12px; font-size: 13px; font-weight: 700; cursor: pointer; font-family: inherit;
+  transition: background .15s, color .15s;
+}
+.lang-switch .lang-btn + .lang-btn { border-left: 1px solid var(--border); }
+.lang-switch .lang-btn:hover { background: var(--bg-elev); }
+.lang-switch .lang-btn.active { background: var(--primary); color: #fff; }
+
+.cloud-status { font-size: 12px; color: var(--text-mute); white-space: nowrap; margin-left: 12px; }
 .cloud-status + .theme-toggle { margin-left: 12px; }
+.theme-toggle { margin-left: 12px; }
 
 .theme-toggle {
   margin-left: auto;

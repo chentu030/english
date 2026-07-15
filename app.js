@@ -14,10 +14,42 @@ const LS_THEME = 'vocab_theme_v1';
 const LS_FOLDERS = 'vocab_folders_v1';
 const LS_DAILY = 'vocab_daily_v1';
 const LS_DAILY_HIST = 'vocab_daily_hist_v1'; // { 'YYYY-MM-DD': 翻閱張數 }
+const LS_LANG = 'vocab_lang_v1';
 
 // 計入每日目標的模式（中英、克漏字為主）
 const DAILY_MODES = ['en2zh', 'zh2en', 'spelling'];
 const NO_FOLDER = '__none__';
+
+/* ---------------------- 多語言（英文 / 德文，資料分開） ---------------------- */
+const LANGS = {
+  en: {
+    code: 'en', label: '英文', name: '英文', teacher: '英文單字整理老師',
+    collection: 'cards', dictLang: 'en', speech: { us: 'en-US', uk: 'en-GB', def: 'en-US' },
+    fwd: '英 → 中', bwd: '中 → 英',
+    fwdDesc: '看英文單字，回想中文意思', bwdDesc: '看中文意思，回想英文單字',
+    askMeaning: '這個字的意思是？', askWord: '對應的英文單字是？',
+  },
+  de: {
+    code: 'de', label: '德文', name: '德文', teacher: '德文單字整理老師',
+    collection: 'cards_de', dictLang: 'de', speech: { us: 'de-DE', uk: 'de-DE', def: 'de-DE' },
+    fwd: '德 → 中', bwd: '中 → 德',
+    fwdDesc: '看德文單字，回想中文意思', bwdDesc: '看中文意思，回想德文單字',
+    askMeaning: '這個字的意思是？', askWord: '對應的德文單字是？',
+  },
+};
+let currentLang = localStorage.getItem(LS_LANG) || 'en';
+if (!LANGS[currentLang]) currentLang = 'en';
+function L() { return LANGS[currentLang]; }
+// 依語言取得 localStorage key（英文沿用舊 key，其他語言加後綴，資料互不干擾）
+function nsKey(base) { return currentLang === 'en' ? base : `${base}_${currentLang}`; }
+// 依語言調整背誦模式的顯示名稱
+function applyLangToModes() {
+  const l = L();
+  STUDY_MODES.forEach(m => {
+    if (m.id === 'en2zh') { m.name = l.fwd; m.desc = l.fwdDesc; }
+    if (m.id === 'zh2en') { m.name = l.bwd; m.desc = l.bwdDesc; }
+  });
+}
 
 // 背誦模式定義：id、名稱、說明、判斷該卡是否有此模式內容
 const STUDY_MODES = [
@@ -106,16 +138,16 @@ function loadJSON(key, fallback) {
     return raw ? JSON.parse(raw) : fallback;
   } catch { return fallback; }
 }
-function saveCards() { localStorage.setItem(LS_CARDS, JSON.stringify(cards)); }
+function saveCards() { localStorage.setItem(nsKey(LS_CARDS), JSON.stringify(cards)); }
 function saveSettings() { localStorage.setItem(LS_SETTINGS, JSON.stringify(settings)); }
-function saveFolders() { localStorage.setItem(LS_FOLDERS, JSON.stringify(folders)); }
-function saveDaily() { localStorage.setItem(LS_DAILY, JSON.stringify(daily)); }
+function saveFolders() { localStorage.setItem(nsKey(LS_FOLDERS), JSON.stringify(folders)); }
+function saveDaily() { localStorage.setItem(nsKey(LS_DAILY), JSON.stringify(daily)); }
 // 每翻閱一張卡就在當日 +1（供 GitHub 風格熱力圖使用）
 function bumpHistory() {
-  const hist = loadJSON(LS_DAILY_HIST, {});
+  const hist = loadJSON(nsKey(LS_DAILY_HIST), {});
   const k = todayStr();
   hist[k] = (hist[k] || 0) + 1;
-  localStorage.setItem(LS_DAILY_HIST, JSON.stringify(hist));
+  localStorage.setItem(nsKey(LS_DAILY_HIST), JSON.stringify(hist));
 }
 
 function esc(s) {
@@ -126,7 +158,7 @@ function esc(s) {
 // ---- 朗讀 ----
 // (1) 瀏覽器語音（Web Speech API）
 function speak(text, lang) {
-  lang = lang || (settings.accent === 'uk' ? 'en-GB' : 'en-US');
+  lang = lang || (settings.accent === 'uk' ? L().speech.uk : L().speech.us) || L().speech.def;
   if (!text || !window.speechSynthesis) { toast('這個瀏覽器不支援朗讀', true); return; }
   try {
     window.speechSynthesis.cancel();
@@ -150,7 +182,7 @@ async function fetchWordAudio(word) {
   if (wordAudioCache.has(key)) return wordAudioCache.get(key);
   let entry = null;
   try {
-    const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(key)}`);
+    const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/${L().dictLang}/${encodeURIComponent(key)}`);
     if (res.ok) {
       const data = await res.json();
       const found = { us: '', uk: '', any: '' };
@@ -171,15 +203,16 @@ async function speakWordAccent(word, accent) {
   const w = (word || '').trim();
   if (!w) return;
   const entry = await fetchWordAudio(w);
+  const spLang = (accent === 'uk' ? L().speech.uk : L().speech.us) || L().speech.def;
   if (entry) {
     const url = accent === 'uk' ? (entry.uk || entry.us || entry.any) : (entry.us || entry.uk || entry.any);
     if (url) {
-      try { new Audio(url.startsWith('//') ? 'https:' + url : url).play().catch(() => speak(w, accent === 'uk' ? 'en-GB' : 'en-US')); return; }
+      try { new Audio(url.startsWith('//') ? 'https:' + url : url).play().catch(() => speak(w, spLang)); return; }
       catch { /* 落到語音 */ }
     }
   }
   toast(`找不到${accent === 'uk' ? '英式' : '美式'}真人錄音，改用瀏覽器語音`);
-  speak(w, accent === 'uk' ? 'en-GB' : 'en-US');
+  speak(w, spLang);
 }
 // 依設定口音播放（給非標題的單字用）
 function speakWord(word) { return speakWordAccent(word, settings.accent === 'uk' ? 'uk' : 'us'); }
@@ -284,14 +317,15 @@ function toast(msg, isErr = false) {
    初始化
    ========================================================================= */
 function init() {
-  cards = loadJSON(LS_CARDS, []);
+  cards = loadJSON(nsKey(LS_CARDS), []);
   settings = { ...DEFAULT_SETTINGS, ...loadJSON(LS_SETTINGS, {}) };
-  folders = loadJSON(LS_FOLDERS, []);
-  daily = loadJSON(LS_DAILY, { date: todayStr(), count: 0, streak: 0, lastMetDate: '', countedIds: [] });
+  folders = loadJSON(nsKey(LS_FOLDERS), []);
+  daily = loadJSON(nsKey(LS_DAILY), { date: todayStr(), count: 0, streak: 0, lastMetDate: '', countedIds: [] });
   if (!Array.isArray(daily.countedIds)) daily.countedIds = [];
   migrateSettings();
   migrateCards();
   rolloverDaily();
+  applyLangToModes();
 
   applyTheme(localStorage.getItem(LS_THEME) || 'light');
   // 全域喇叭朗讀（事件委派）
@@ -313,6 +347,7 @@ function init() {
 
   bindNav();
   bindTheme();
+  bindLang();
   bindAdd();
   bindBatch();
   bindDeck();
@@ -328,6 +363,7 @@ function init() {
   $('#dailyGoalInput').value = settings.dailyGoal || 20;
 
   bindDeckControls();
+  updateLangUI();
   renderFolderSelects();
   renderDailyPanel();
   renderDeck();
@@ -341,11 +377,16 @@ function init() {
 /* ---------------------- 雲端同步 ---------------------- */
 let cloudReady = false;
 let firstSnapshot = true;
+let cloudUnsub = null;
 
 function startCloud() {
+  if (!(window.Cloud && window.Cloud.enabled)) return;
   cloudReady = true;
+  firstSnapshot = true;
+  if (cloudUnsub) { try { cloudUnsub(); } catch { } cloudUnsub = null; }
+  if (window.Cloud.setCollection) window.Cloud.setCollection(L().collection);
   setCloudBadge('連線中…');
-  window.Cloud.start(onCloudCards);
+  cloudUnsub = window.Cloud.start(onCloudCards);
 }
 
 function onCloudCards(cloudCards) {
@@ -365,7 +406,7 @@ function onCloudCards(cloudCards) {
   }
   cards.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   migrateCards();
-  localStorage.setItem(LS_CARDS, JSON.stringify(cards));
+  localStorage.setItem(nsKey(LS_CARDS), JSON.stringify(cards));
   setCloudBadge('已同步');
   refreshCurrentView();
 }
@@ -450,6 +491,44 @@ function bindTheme() {
   });
 }
 
+/* ---------------------- 語言切換（英文 / 德文） ---------------------- */
+function bindLang() {
+  $('#langSwitch')?.addEventListener('click', e => {
+    const b = e.target.closest('[data-lang]');
+    if (b) switchLang(b.dataset.lang);
+  });
+}
+function updateLangUI() {
+  document.querySelectorAll('#langSwitch [data-lang]').forEach(b =>
+    b.classList.toggle('active', b.dataset.lang === currentLang));
+  const brand = $('.brand h1');
+  if (brand) brand.textContent = currentLang === 'de' ? '快速背德文' : '快速背單字';
+}
+function switchLang(lang) {
+  if (!LANGS[lang] || lang === currentLang) return;
+  currentLang = lang;
+  localStorage.setItem(LS_LANG, lang);
+  // 重新載入該語言的資料（各語言互不干擾）
+  cards = loadJSON(nsKey(LS_CARDS), []);
+  folders = loadJSON(nsKey(LS_FOLDERS), []);
+  daily = loadJSON(nsKey(LS_DAILY), { date: todayStr(), count: 0, streak: 0, lastMetDate: '', countedIds: [] });
+  if (!Array.isArray(daily.countedIds)) daily.countedIds = [];
+  rolloverDaily();
+  migrateCards();
+  applyLangToModes();
+  // 重置詞庫檢視狀態
+  deckFolder = ''; starOnly = false; if (selectMode) setSelectMode(false);
+  const sf = $('#starFilterBtn'); if (sf) sf.classList.remove('active');
+  updateLangUI();
+  renderFolderSelects();
+  renderDailyPanel();
+  renderDeck();
+  renderModeGrid();
+  // 重新訂閱該語言的雲端集合
+  startCloud();
+  toast(`已切換到${L().label}`);
+}
+
 /* =========================================================================
    Gemini API
    ========================================================================= */
@@ -480,12 +559,12 @@ const SEGMENTS = [
         }),
       },
     },
-    prompt: (word, raw) => `你是英文單字整理老師。請只整理單字「${word}」的「音標與釋義」，輸出繁體中文為主的 JSON。
+    prompt: (word, raw) => `你是${L().name}單字整理老師。請只整理${L().name}單字「${word}」的「音標與釋義」，輸出繁體中文為主的 JSON。
 ${rawBlock(raw)}
 
 要求：
-- phonetic_uk / phonetic_us：英式、美式音標（若無可留空）。
-- definitions：列出最常用的 2～5 個詞性與中英文意思，每個附一個實用例句（example_en 英文 + example_zh 中文翻譯）。
+- phonetic_uk / phonetic_us：音標（英文填英式/美式；德文可填 IPA 或留空）。
+- definitions：列出最常用的 2～5 個詞性與中文意思，meaning_en 填${L().name}原文釋義（可留空），每個附一個實用例句（example_en 填${L().name}例句 + example_zh 中文翻譯）。
 只做這部分，不要輸出其他欄位。`,
   },
   {
@@ -498,7 +577,7 @@ ${rawBlock(raw)}
         etymology: { type: 'string' },
       },
     },
-    prompt: (word, raw) => `你是記憶法專家。請只針對單字「${word}」設計「助記法與詞根詞源」，輸出繁體中文 JSON。
+    prompt: (word, raw) => `你是記憶法專家。請只針對${L().name}單字「${word}」設計「助記法與詞根詞源」，輸出繁體中文 JSON。
 ${rawBlock(raw)}
 
 要求：
@@ -516,7 +595,7 @@ ${rawBlock(raw)}
         phrases: _list({ phrase: { type: 'string' }, meaning: { type: 'string' } }),
       },
     },
-    prompt: (word, raw) => `你是英文單字整理老師。請只整理單字「${word}」的「搭配詞與片語」，輸出繁體中文 JSON。
+    prompt: (word, raw) => `你是${L().name}單字整理老師。請只整理${L().name}單字「${word}」的「搭配詞與片語」，輸出繁體中文 JSON。
 ${rawBlock(raw)}
 
 要求：
@@ -535,7 +614,7 @@ ${rawBlock(raw)}
         confusing_words: _list({ word: { type: 'string' }, meaning: { type: 'string' }, difference: { type: 'string' } }),
       },
     },
-    prompt: (word, raw) => `你是英文單字整理老師。請只整理單字「${word}」的「同義詞、反義詞、情境詞、易混淆詞」，輸出繁體中文 JSON。
+    prompt: (word, raw) => `你是${L().name}單字整理老師。請只整理${L().name}單字「${word}」的「同義詞、反義詞、情境詞、易混淆詞」，輸出繁體中文 JSON。
 ${rawBlock(raw)}
 
 要求：
@@ -553,16 +632,21 @@ ${rawBlock(raw)}
         derivatives: _list({ word: { type: 'string' }, pos: { type: 'string' }, meaning: { type: 'string' } }),
       },
     },
-    prompt: (word, raw) => `你是英文單字整理老師。請只整理單字「${word}」的「詞形變化與詞性變換」，輸出繁體中文 JSON。
+    prompt: (word, raw) => `你是${L().name}單字整理老師。請只整理${L().name}單字「${word}」的「詞形變化與詞性變換」，輸出繁體中文 JSON。
 ${rawBlock(raw)}
 
 要求：
-- word_forms：依詞性列出所有變化形。label 用中文標籤、form 填該形式。例如：
+- word_forms：依詞性列出所有變化形。label 用中文標籤、form 填該形式。${currentLang === 'de'
+      ? `德文請特別列出：
+  - 名詞：「詞性（der/die/das）」「複數」「屬格」
+  - 動詞：「現在式(er/sie/es)」「過去式(Präteritum)」「完成式(Partizip II)」「助動詞(haben/sein)」，可附主要不規則變位
+  - 形容詞／副詞：「比較級」「最高級」`
+      : `例如：
   - 名詞：「複數」
   - 動詞：「第三人稱單數」「現在分詞」「過去式」「過去分詞」
-  - 形容詞／副詞：「比較級」「最高級」
+  - 形容詞／副詞：「比較級」「最高級」`}
   不適用的變化就不要列。
-- derivatives：詞性變換／派生詞，列出同詞根但不同詞性的相關字，word 填單字、pos 填詞性（如 n./adj./adv.）、meaning 填中文意思。
+- derivatives：詞性變換／派生詞，列出同詞根但不同詞性的相關字，word 填單字、pos 填詞性、meaning 填中文意思。
 只做這部分。`,
   },
   {
@@ -573,11 +657,11 @@ ${rawBlock(raw)}
         examples: _list({ en: { type: 'string' }, zh: { type: 'string' } }),
       },
     },
-    prompt: (word, raw) => `你是英文單字整理老師。請只整理單字「${word}」的「例句庫」，輸出繁體中文 JSON。
+    prompt: (word, raw) => `你是${L().name}單字整理老師。請只整理${L().name}單字「${word}」的「例句庫」，輸出繁體中文 JSON。
 ${rawBlock(raw)}
 
 要求：
-- examples：3～6 句實用例句，涵蓋不同用法，每句 en 英文 + zh 中文翻譯。優先取用原始內容中的好例句。
+- examples：3～6 句實用例句，涵蓋不同用法，每句 en 填${L().name}例句 + zh 中文翻譯。優先取用原始內容中的好例句。
 只做這部分。`,
   },
 ];
@@ -1394,7 +1478,7 @@ function heatLevel(n) {
   return 4;
 }
 function renderHeatmap() {
-  const hist = loadJSON(LS_DAILY_HIST, {});
+  const hist = loadJSON(nsKey(LS_DAILY_HIST), {});
   const weeks = 53; // 約一年（GitHub 風格）
   const WD = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -1782,12 +1866,12 @@ function renderFaces(d, mode) {
   let front = '', back = '';
 
   if (mode === 'en2zh') {
-    front = wordBlock + `<div class="fc-prompt">這個字的意思是？</div>`;
+    front = wordBlock + `<div class="fc-prompt">${L().askMeaning}</div>`;
     back = `<div class="entry-section"><div class="es-title">📖 釋義</div>${defsFull}</div>`
       + mnemBlock(d);
   } else if (mode === 'zh2en') {
     const zh = (d.definitions || []).map(x => (x.pos ? x.pos + ' ' : '') + x.meaning_zh).join('；');
-    front = `<div class="fc-zh-main">${esc(zh)}</div><div class="fc-prompt">對應的英文單字是？</div>`;
+    front = `<div class="fc-zh-main">${esc(zh)}</div><div class="fc-prompt">${L().askWord}</div>`;
     back = wordBlock + mnemBlock(d)
       + `<div class="entry-section" style="margin-top:14px"><div class="es-title">📖 釋義</div>${defsFull}</div>`;
   } else if (mode === 'collocation') {
