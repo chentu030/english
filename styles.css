@@ -210,6 +210,24 @@ h3 { font-size: 17px; margin-bottom: 8px; }
   background: var(--bg-soft); color: var(--text-soft); font-size: 12px; font-family: inherit; cursor: pointer;
 }
 
+/* 批次選取 */
+#selectModeBtn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.select-bar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 10px 14px; margin-bottom: 14px;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.select-bar .sb-all { display: flex; align-items: center; gap: 6px; font-size: 14px; cursor: pointer; }
+.select-bar .sb-count { font-size: 14px; color: var(--text-soft); }
+.select-bar .deck-select { min-width: 150px; }
+.word-card.selecting { cursor: pointer; user-select: none; }
+.word-card.selecting:hover { border-color: var(--primary); }
+.word-card.checked { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary) inset; }
+.word-card .wc-check {
+  position: absolute; top: 12px; right: 12px; width: 18px; height: 18px;
+  accent-color: var(--primary); cursor: pointer; pointer-events: none;
+}
+
 /* 總結畫面 */
 .done-stats { display: flex; justify-content: center; gap: 24px; margin: 16px 0; }
 .done-stats .d-item { text-align: center; }
@@ -403,7 +421,17 @@ input:focus, textarea:focus, select:focus {
 }
 .speak-btn:hover { opacity: 1; background: var(--bg-soft); }
 .speak-btn:active { transform: scale(.9); }
-.fc-word .speak-btn { font-size: 22px; }
+.fc-word .speak-btn { font-size: 18px; }
+
+/* 標題單字的多口音喇叭群組 */
+.spk-group { display: inline-flex; gap: 3px; margin-left: 8px; vertical-align: middle; }
+.spk-group .speak-btn {
+  font-size: 12px; padding: 3px 7px; border: 1px solid var(--border);
+  background: var(--bg-soft); opacity: .95; border-radius: 999px; line-height: 1.1;
+}
+.spk-group .speak-btn:hover { background: var(--primary); color: #fff; border-color: var(--primary); }
+.fc-word .spk-group .speak-btn { font-size: 13px; padding: 4px 9px; }
+.entry-word .spk-group { margin-left: 10px; }
 
 /* ===================== 卡片編輯器 ===================== */
 .editor-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }

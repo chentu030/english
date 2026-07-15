@@ -55,8 +55,15 @@
             <option value="alpha">字母 A→Z</option>
           </select>
           <button class="btn ghost" id="newFolderBtn">＋ 資料夾</button>
+          <button class="btn ghost" id="selectModeBtn">☑ 選取</button>
           <button class="btn primary" data-view="study" id="quickStudyBtn">開始背誦 →</button>
         </div>
+      </div>
+      <div id="selectBar" class="select-bar" hidden>
+        <label class="sb-all"><input type="checkbox" id="selectAll" /> 全選</label>
+        <span id="selectCount" class="sb-count">已選 0</span>
+        <select id="moveFolder" class="deck-select" title="移動到資料夾"><option value="">移動到…</option></select>
+        <button class="btn ghost" id="selectCancelBtn">取消</button>
       </div>
       <div id="deckList" class="deck-list"></div>
       <div id="deckEmpty" class="empty-state">

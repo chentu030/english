@@ -51,6 +51,9 @@ let folders = [];      // 自訂資料夾名稱
 let daily = null;      // { date, count, streak, lastMetDate }
 let deckFolder = '';   // 詞庫篩選：'' 全部、NO_FOLDER 未分類、否則資料夾名
 let deckSort = 'created_desc';
+let selectMode = false;          // 詞庫批次選取模式
+let lastFilteredIds = [];        // 目前畫面上顯示的卡片 id（供全選使用）
+const selectedIds = new Set();   // 已勾選的卡片 id
 
 /* ---------------------- 工具 ---------------------- */
 const $ = sel => document.querySelector(sel);
@@ -91,7 +94,7 @@ function esc(s) {
 }
 
 // ---- 朗讀 ----
-// 句子：用瀏覽器 Web Speech API（即時生成）
+// (1) 瀏覽器語音（Web Speech API）
 function speak(text, lang) {
   lang = lang || (settings.accent === 'uk' ? 'en-GB' : 'en-US');
   if (!text || !window.speechSynthesis) { toast('這個瀏覽器不支援朗讀', true); return; }
@@ -101,7 +104,6 @@ function speak(text, lang) {
     u.lang = lang;
     u.rate = 0.95;
     const voices = window.speechSynthesis.getVoices();
-    // 優先挑高品質（Google / Microsoft）且語系相符的語音
     const same = voices.filter(x => x.lang && x.lang.toLowerCase().startsWith(lang.slice(0, 2).toLowerCase()));
     const best = same.find(x => x.lang.toLowerCase() === lang.toLowerCase() && /google|microsoft|natural/i.test(x.name))
       || same.find(x => x.lang.toLowerCase() === lang.toLowerCase())
@@ -111,49 +113,132 @@ function speak(text, lang) {
   } catch (e) { console.error(e); }
 }
 
-// 單詞：優先播放真人錄音字典發音，抓不到才退回瀏覽器語音
+// (2) 真人錄音字典發音（dictionaryapi.dev），可指定美式/英式
 const wordAudioCache = new Map(); // word -> {us,uk,any} 或 null
-async function speakWord(word) {
+async function fetchWordAudio(word) {
+  const key = word.trim().toLowerCase();
+  if (wordAudioCache.has(key)) return wordAudioCache.get(key);
+  let entry = null;
+  try {
+    const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(key)}`);
+    if (res.ok) {
+      const data = await res.json();
+      const found = { us: '', uk: '', any: '' };
+      (data || []).forEach(en => (en.phonetics || []).forEach(p => {
+        if (!p.audio) return;
+        if (!found.any) found.any = p.audio;
+        const u = p.audio.toLowerCase();
+        if (u.includes('-us.') && !found.us) found.us = p.audio;
+        if (u.includes('-uk.') && !found.uk) found.uk = p.audio;
+      }));
+      if (found.any) entry = found;
+    }
+  } catch (e) { /* 忽略 */ }
+  wordAudioCache.set(key, entry);
+  return entry;
+}
+async function speakWordAccent(word, accent) {
   const w = (word || '').trim();
   if (!w) return;
-  const key = w.toLowerCase();
-  let entry = wordAudioCache.get(key);
-  if (entry === undefined) {
-    entry = null;
-    try {
-      const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(key)}`);
-      if (res.ok) {
-        const data = await res.json();
-        const found = { us: '', uk: '', any: '' };
-        (data || []).forEach(en => (en.phonetics || []).forEach(p => {
-          if (!p.audio) return;
-          if (!found.any) found.any = p.audio;
-          const u = p.audio.toLowerCase();
-          if (u.includes('-us.') && !found.us) found.us = p.audio;
-          if (u.includes('-uk.') && !found.uk) found.uk = p.audio;
-        }));
-        if (found.any) entry = found;
-      }
-    } catch (e) { /* 網路錯誤就退回語音 */ }
-    wordAudioCache.set(key, entry);
-  }
+  const entry = await fetchWordAudio(w);
   if (entry) {
-    const pref = settings.accent === 'uk' ? (entry.uk || entry.us || entry.any) : (entry.us || entry.uk || entry.any);
-    try {
-      const audio = new Audio(pref.startsWith('//') ? 'https:' + pref : pref);
-      audio.play().catch(() => speak(w));
-      return;
-    } catch { /* 落到語音 */ }
+    const url = accent === 'uk' ? (entry.uk || entry.us || entry.any) : (entry.us || entry.uk || entry.any);
+    if (url) {
+      try { new Audio(url.startsWith('//') ? 'https:' + url : url).play().catch(() => speak(w, accent === 'uk' ? 'en-GB' : 'en-US')); return; }
+      catch { /* 落到語音 */ }
+    }
   }
-  speak(w);
+  toast(`找不到${accent === 'uk' ? '英式' : '美式'}真人錄音，改用瀏覽器語音`);
+  speak(w, accent === 'uk' ? 'en-GB' : 'en-US');
+}
+// 依設定口音播放（給非標題的單字用）
+function speakWord(word) { return speakWordAccent(word, settings.accent === 'uk' ? 'uk' : 'us'); }
+
+// (3) Gemini AI 語音（TTS，臨時生成；走 Vertex 通道）
+const TTS_MODELS = ['gemini-3.1-flash-tts-preview', 'gemini-2.5-flash-preview-tts'];
+function pcmB64ToWavUrl(b64, sampleRate) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const dataLen = bytes.length;
+  const buffer = new ArrayBuffer(44 + dataLen);
+  const view = new DataView(buffer);
+  const w = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); view.setUint32(4, 36 + dataLen, true); w(8, 'WAVE'); w(12, 'fmt ');
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true); w(36, 'data'); view.setUint32(40, dataLen, true);
+  new Uint8Array(buffer, 44).set(bytes);
+  return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
+}
+let ttsBusy = false;
+async function speakGeminiTTS(text) {
+  if (!text) return;
+  const keys = (settings.apiKeys || []).filter(Boolean);
+  if (!keys.length) { toast('尚未設定 API 金鑰', true); return; }
+  if (ttsBusy) return;
+  ttsBusy = true;
+  toast('🤖 AI 生成語音中…');
+  const body = {
+    contents: [{ role: 'user', parts: [{ text }] }],
+    generationConfig: {
+      responseModalities: ['AUDIO'],
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+    },
+  };
+  try {
+    for (const model of TTS_MODELS) {
+      for (let attempt = 0; attempt < keys.length; attempt++) {
+        const key = keys[keyIndex % keys.length];
+        keyIndex = (keyIndex + 1) % keys.length;
+        try {
+          const url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+          const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          if (!res.ok) {
+            if ([429, 500, 502, 503, 504].includes(res.status)) continue; // 換金鑰
+            break; // 這個模型不行（如 400/404），換下一個模型
+          }
+          const data = await res.json();
+          const part = data?.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+          if (!part) break;
+          const rate = parseInt((part.inlineData.mimeType || '').match(/rate=(\d+)/)?.[1] || '24000', 10);
+          new Audio(pcmB64ToWavUrl(part.inlineData.data, rate)).play();
+          ttsBusy = false;
+          return;
+        } catch (e) { /* 換下一把金鑰 */ }
+      }
+    }
+    toast('AI 語音失敗，改用瀏覽器語音', true);
+    speak(text);
+  } finally { ttsBusy = false; }
 }
 
-// 喇叭按鈕：isWord=true 走字典發音
-function spk(text, lang, isWord) {
+// ---- 喇叭按鈕 HTML ----
+// 標題單字：美式 / 英式 / 瀏覽器 / AI 四顆
+function spkWord3(text) {
   if (!text) return '';
-  return `<button class="speak-btn" data-speak="${esc(text)}"${isWord ? ' data-word="1"' : ''}${lang ? ` data-lang="${lang}"` : ''} title="朗讀" type="button">🔊</button>`;
+  const t = esc(text);
+  return `<span class="spk-group">`
+    + `<button class="speak-btn" data-speak="${t}" data-src="us" title="美式真人錄音" type="button">🔊美</button>`
+    + `<button class="speak-btn" data-speak="${t}" data-src="uk" title="英式真人錄音" type="button">🔊英</button>`
+    + `<button class="speak-btn" data-speak="${t}" data-src="browser" title="瀏覽器語音" type="button">🔊瀏</button>`
+    + `<button class="speak-btn" data-speak="${t}" data-src="ai" title="AI 語音（臨時生成）" type="button">🤖</button>`
+    + `</span>`;
 }
-function spkw(word) { return spk(word, '', true); }
+// 一般單字（詞形變化、派生詞）：依設定口音的字典發音 + AI
+function spkw(word) {
+  if (!word) return '';
+  const t = esc(word);
+  return `<button class="speak-btn" data-speak="${t}" data-src="dict" title="真人錄音發音" type="button">🔊</button>`
+    + `<button class="speak-btn" data-speak="${t}" data-src="ai" title="AI 語音" type="button">🤖</button>`;
+}
+// 句子：瀏覽器語音 + AI
+function spk(text) {
+  if (!text) return '';
+  const t = esc(text);
+  return `<button class="speak-btn" data-speak="${t}" data-src="browser" title="瀏覽器語音" type="button">🔊</button>`
+    + `<button class="speak-btn" data-speak="${t}" data-src="ai" title="AI 語音" type="button">🤖</button>`;
+}
 
 let toastTimer;
 function toast(msg, isErr = false) {
@@ -181,10 +266,15 @@ function init() {
   // 全域喇叭朗讀（事件委派）
   document.addEventListener('click', e => {
     const b = e.target.closest('.speak-btn');
-    if (b) {
-      e.stopPropagation();
-      if (b.dataset.word) speakWord(b.dataset.speak);
-      else speak(b.dataset.speak, b.dataset.lang || '');
+    if (!b) return;
+    e.stopPropagation();
+    const t = b.dataset.speak;
+    switch (b.dataset.src) {
+      case 'us': speakWordAccent(t, 'us'); break;
+      case 'uk': speakWordAccent(t, 'uk'); break;
+      case 'ai': speakGeminiTTS(t); break;
+      case 'dict': speakWord(t); break;
+      default: speak(t);
     }
   });
   // 預先載入語音清單（部分瀏覽器需要）
@@ -820,7 +910,11 @@ function renderPreview(d, container, ctx) {
   const editable = !!(ctx && ctx.editable);
   container.oninput = null; container.onclick = null; container._onDone = null; // 清掉編輯器殘留的處理器
   if (editable) currentEntry = { data: d, container, word: ctx.word || d.word, raw: ctx.raw || '', onChange: ctx.onChange, card: ctx.card || null };
+  container.innerHTML = buildEntryHtml(d, editable);
+}
 
+// 產生整張卡片的 HTML（editable=true 會顯示編輯/重新生成鈕）
+function buildEntryHtml(d, editable) {
   // sec：editable 時即使空白也會顯示區塊與「重新生成」按鈕
   const sec = (title, icon, inner, seg) => {
     if (!inner && !editable) return '';
@@ -872,9 +966,9 @@ function renderPreview(d, container, ctx) {
     ? `<div class="editor-toolbar"><button class="btn small" data-edit-card>✏️ 手動編輯整張卡</button></div>`
     : '';
 
-  container.innerHTML = `
+  return `
     ${toolbar}
-    <div class="entry-word">${esc(d.word)}${spkw(d.word)}</div>
+    <div class="entry-word">${esc(d.word)}${spkWord3(d.word)}</div>
     ${phon ? `<div class="entry-phon">${phon}</div>` : ''}
     ${sec('釋義', '📖', defs, 'base')}
     ${sec('詞形變化', '🔤', formsPills, 'forms')}
@@ -1029,6 +1123,11 @@ function renderEditor(data, container, onChange) {
 function bindDeck() {
   $('#deckSearch').addEventListener('input', renderDeck);
   $('#deckList').addEventListener('click', e => {
+    if (selectMode) {
+      const card = e.target.closest('.word-card');
+      if (card) toggleSelect(card.dataset.id);
+      return;
+    }
     const del = e.target.closest('.wc-del');
     if (del) {
       e.stopPropagation();
@@ -1086,6 +1185,15 @@ function renderFolderSelects() {
       + list.map(f => `<option value="${esc(f)}">${esc(f)}</option>`).join('');
     sf.value = prev || '';
   }
+  // 批次移動目的地
+  const mf = $('#moveFolder');
+  if (mf) {
+    mf.innerHTML = `<option value="">移動到…</option>`
+      + `<option value="${NO_FOLDER}">未分類</option>`
+      + list.map(f => `<option value="${esc(f)}">${esc(f)}</option>`).join('')
+      + `<option value="__new__">＋ 新資料夾…</option>`;
+    mf.value = '';
+  }
 }
 
 // 產生卡片上的資料夾下拉
@@ -1113,6 +1221,27 @@ function bindDeckControls() {
     const name = createFolder();
     if (name) { deckFolder = name; renderFolderSelects(); renderDeck(); }
   });
+  // 批次選取
+  $('#selectModeBtn').addEventListener('click', () => setSelectMode(!selectMode));
+  $('#selectCancelBtn').addEventListener('click', () => setSelectMode(false));
+  $('#selectAll').addEventListener('change', e => {
+    if (e.target.checked) lastFilteredIds.forEach(id => selectedIds.add(id));
+    else selectedIds.clear();
+    renderDeck();
+    updateSelectBar();
+  });
+  $('#moveFolder').addEventListener('change', e => {
+    const sel = e.target;
+    let val = sel.value;
+    if (!val && val !== '') return;
+    if (!selectedIds.size) { toast('尚未勾選任何卡片', true); sel.value = ''; return; }
+    if (val === '__new__') {
+      val = createFolder();
+      if (!val) { sel.value = ''; return; }
+    }
+    moveSelectedTo(val === NO_FOLDER ? '' : val);
+    sel.value = '';
+  });
   // 卡片上的資料夾下拉（事件委派）
   $('#deckList').addEventListener('change', e => {
     const sel = e.target.closest('.wc-folder');
@@ -1131,6 +1260,55 @@ function bindDeckControls() {
     renderDeck();
     toast(val ? `已移到「${val}」` : '已設為未分類');
   });
+}
+
+/* ---------------------- 批次選取 / 移動 ---------------------- */
+function setSelectMode(on) {
+  selectMode = on;
+  selectedIds.clear();
+  const bar = $('#selectBar');
+  if (bar) bar.hidden = !on;
+  const btn = $('#selectModeBtn');
+  if (btn) btn.classList.toggle('active', on);
+  renderDeck();
+  updateSelectBar();
+}
+function toggleSelect(id) {
+  if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
+  const el = document.querySelector(`.word-card[data-id="${id}"]`);
+  if (el) {
+    el.classList.toggle('checked', selectedIds.has(id));
+    const cb = el.querySelector('.wc-check');
+    if (cb) cb.checked = selectedIds.has(id);
+  }
+  updateSelectBar();
+}
+function updateSelectBar() {
+  const cnt = $('#selectCount');
+  if (cnt) cnt.textContent = `已選 ${selectedIds.size}`;
+  const all = $('#selectAll');
+  if (all) {
+    const total = lastFilteredIds.length;
+    const sel = lastFilteredIds.filter(id => selectedIds.has(id)).length;
+    all.checked = total > 0 && sel === total;
+    all.indeterminate = sel > 0 && sel < total;
+  }
+}
+function moveSelectedTo(folder) {
+  const ids = Array.from(selectedIds);
+  let moved = 0;
+  ids.forEach(id => {
+    const card = cards.find(c => c.id === id);
+    if (!card) return;
+    card.folder = folder;
+    cloudUpsert(card);
+    moved++;
+  });
+  saveCards();
+  setSelectMode(false);
+  renderFolderSelects();
+  renderDeck();
+  toast(`已把 ${moved} 張移到「${folder || '未分類'}」`);
 }
 
 /* ---------------------- 每日目標 / 簽到 ---------------------- */
@@ -1207,6 +1385,10 @@ function renderDeck() {
     return (b.createdAt || 0) - (a.createdAt || 0); // created_desc
   });
 
+  lastFilteredIds = filtered.map(c => c.id);
+  // 清掉已不在畫面上的勾選
+  Array.from(selectedIds).forEach(id => { if (!lastFilteredIds.includes(id)) selectedIds.delete(id); });
+
   if (cards.length === 0) { list.innerHTML = ''; empty.style.display = 'block'; return; }
   empty.style.display = 'none';
 
@@ -1220,16 +1402,20 @@ function renderDeck() {
     if (due > 0) tags.push(`<span class="wc-tag due">待複習 ${due}</span>`);
     if ((d.mnemonics || []).length) tags.push('<span class="wc-tag">💡助記</span>');
     if (created) tags.push(`<span class="wc-tag">🗓 ${created}</span>`);
+    const checked = selectedIds.has(c.id);
     return `
-      <div class="word-card" data-id="${c.id}">
-        <button class="wc-del" title="刪除">✕</button>
+      <div class="word-card${selectMode ? ' selecting' : ''}${checked ? ' checked' : ''}" data-id="${c.id}">
+        ${selectMode
+        ? `<input type="checkbox" class="wc-check" ${checked ? 'checked' : ''} tabindex="-1" />`
+        : `<button class="wc-del" title="刪除">✕</button>`}
         <div class="wc-word">${esc(d.word)}</div>
         ${phon ? `<div class="wc-phon">${esc(phon)}</div>` : ''}
         <div class="wc-mean">${esc(mean || '（無釋義）')}</div>
         ${tags.length ? `<div class="wc-tags">${tags.join('')}</div>` : ''}
-        ${folderSelectHtml(c)}
+        ${selectMode ? '' : folderSelectHtml(c)}
       </div>`;
   }).join('');
+  updateSelectBar();
 }
 
 function openCardDetail(id) {
@@ -1264,7 +1450,7 @@ function getSelectedModes() {
 
 function renderModeGrid() {
   const grid = $('#modeGrid');
-  const prevSelected = grid.dataset.init ? getSelectedModes() : ['en2zh', 'zh2en'];
+  const prevSelected = grid.dataset.init ? getSelectedModes() : ['en2zh', 'spelling'];
   grid.innerHTML = STUDY_MODES.map(m => {
     const dueCount = cards.filter(c => m.has(c.data) && (isDue(c.srs[m.id]))).length;
     const checked = prevSelected.includes(m.id) ? 'checked' : '';
@@ -1401,7 +1587,7 @@ function clozeSentence(d) {
 
 function renderFaces(d, mode) {
   const phon = d.phonetic_us || d.phonetic_uk || '';
-  const wordBlock = `<div class="fc-word">${esc(d.word)}${spkw(d.word)}</div>${phon ? `<div class="fc-phon">${esc(phon)}</div>` : ''}`;
+  const wordBlock = `<div class="fc-word">${esc(d.word)}${spkWord3(d.word)}</div>${phon ? `<div class="fc-phon">${esc(phon)}</div>` : ''}`;
   const defsFull = (d.definitions || []).map(x => `
     <div class="def-item">
       ${x.pos ? `<span class="def-pos">${esc(x.pos)}</span>` : ''}
@@ -1447,7 +1633,7 @@ function renderFaces(d, mode) {
       clozeHtml = `<div class="spell-cloze">${esc(sent.en).replace(re, '<span class="blank">＿＿＿＿</span>')}</div>`
         + (sent.zh ? `<div class="spell-hint-zh">${esc(sent.zh)}</div>` : '');
     }
-    front = `<div class="spell-top">🔊 聽發音，拼出單字 <button class="speak-btn" data-speak="${esc(d.word)}" data-word="1" type="button" title="再聽一次">🔁 播放</button></div>`
+    front = `<div class="spell-top">🔊 聽發音，拼出單字 <button class="speak-btn" data-speak="${esc(d.word)}" data-src="dict" type="button" title="再聽一次">🔁 播放</button></div>`
       + clozeHtml
       + `<input id="spellInput" class="spell-input" placeholder="在此輸入單字…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />`
       + (zhHint ? `<div class="fc-prompt">提示：${esc(zhHint)}</div>` : '')
@@ -1464,7 +1650,8 @@ function renderFaces(d, mode) {
     back = (forms ? `<div class="entry-section"><div class="es-title">🔤 詞形變化</div>${forms}</div>` : '')
       + (derivs ? `<div class="entry-section"><div class="es-title">🔀 詞性變換／派生詞</div>${derivs}</div>` : '');
   }
-  back += notesBlock(d);
+  // 答案面一律顯示「完整字卡」，方便一次看到全部內容
+  back = buildEntryHtml(d, false);
   return { front, back };
 }
 
