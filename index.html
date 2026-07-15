@@ -262,6 +262,21 @@
     </section>
   </main>
 
+  <!-- ===================== 單字卡彈出視窗 ===================== -->
+  <div id="cardModal" class="modal" hidden>
+    <div class="modal-overlay" data-close-modal></div>
+    <div class="modal-box" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <span class="modal-title">單字卡</span>
+        <div class="modal-actions">
+          <button class="btn small primary" id="modalEditBtn">✏️ 編輯</button>
+          <button class="modal-close" id="modalCloseBtn" title="關閉" data-close-modal>✕</button>
+        </div>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" hidden></div>
 
   <!-- 本機私密設定（部署後不存在，會被忽略） -->

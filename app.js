@@ -298,6 +298,7 @@ function init() {
   bindAdd();
   bindBatch();
   bindDeck();
+  bindCardModal();
   bindStudySetup();
   bindStudyControls();
   bindSettings();
@@ -1462,10 +1463,41 @@ function renderDeck() {
   updateSelectBar();
 }
 
+// 點詞庫單字：彈出視窗看整張卡片重點（唯讀）
+let modalCardId = null;
 function openCardDetail(id) {
   const c = cards.find(x => x.id === id);
   if (!c) return;
-  // 借用新增頁的預覽區呈現詳情
+  modalCardId = id;
+  $('#modalBody').innerHTML = buildEntryHtml(c.data, false);
+  const modal = $('#cardModal');
+  modal.hidden = false;
+  document.body.classList.add('modal-open');
+  $('#modalBody').scrollTop = 0;
+}
+function closeCardModal() {
+  $('#cardModal').hidden = true;
+  document.body.classList.remove('modal-open');
+  modalCardId = null;
+}
+function bindCardModal() {
+  $('#modalCloseBtn').addEventListener('click', closeCardModal);
+  $('#cardModal').querySelectorAll('[data-close-modal]').forEach(el =>
+    el.addEventListener('click', closeCardModal));
+  $('#modalEditBtn').addEventListener('click', () => {
+    const id = modalCardId;
+    closeCardModal();
+    if (id) editCardFull(id);
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !$('#cardModal').hidden) closeCardModal();
+  });
+}
+
+// 完整編輯：借用新增頁的預覽區，可逐段重新生成
+function editCardFull(id) {
+  const c = cards.find(x => x.id === id);
+  if (!c) return;
   showView('add');
   $('#wordInput').value = c.data.word;
   $('#rawInput').value = c.raw || '';
@@ -1479,8 +1511,8 @@ function openCardDetail(id) {
   $('#saveCardBtn').hidden = true;
   $('#genStatus').hidden = true;
   $('#addHint').textContent = c.raw
-    ? '（檢視模式）左側為已保存的歐路原文，可修改（自動存檔）；各段可單獨「重新生成」。'
-    : '（檢視模式）這張卡沒有保存原文。可在左側貼上歐路內容（自動存檔）後再重新生成各段。';
+    ? '（編輯模式）左側為已保存的歐路原文，可修改（自動存檔）；各段可單獨「重新生成」。'
+    : '（編輯模式）這張卡沒有保存原文。可在左側貼上歐路內容（自動存檔）後再重新生成各段。';
   pendingCard = null;
   $('#previewArea').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }

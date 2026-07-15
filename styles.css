@@ -615,6 +615,32 @@ input:focus, textarea:focus, select:focus {
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast.err { background: var(--again); color: #fff; }
 
+/* ===================== 單字卡彈出視窗 ===================== */
+body.modal-open { overflow: hidden; }
+.modal { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.modal-overlay { position: absolute; inset: 0; background: rgba(0, 0, 0, .5); backdrop-filter: blur(2px); }
+.modal-box {
+  position: relative; z-index: 1;
+  width: min(760px, 100%); max-height: 88vh; display: flex; flex-direction: column;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow-lg); overflow: hidden;
+  animation: modalIn .16s ease;
+}
+@keyframes modalIn { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+.modal-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0;
+  background: var(--bg-soft);
+}
+.modal-title { font-weight: 700; font-size: 15px; color: var(--text-soft); }
+.modal-actions { display: flex; align-items: center; gap: 8px; }
+.modal-close {
+  border: none; background: transparent; cursor: pointer; color: var(--text-mute);
+  font-size: 18px; line-height: 1; padding: 6px 8px; border-radius: 8px;
+}
+.modal-close:hover { background: var(--bg-elev); color: var(--again); }
+.modal-body { padding: 20px 22px; overflow-y: auto; }
+
 @media (max-width: 820px) {
   .add-grid { grid-template-columns: 1fr; }
   .brand h1 { display: none; }
