@@ -277,16 +277,19 @@ async function speakGeminiTTS(text) {
 }
 
 // ---- 喇叭按鈕 HTML ----
-// 標題單字：美式 / 英式 / 瀏覽器 / AI 四顆
+// 標題單字：英文=美式/英式/瀏覽器/AI；德文=真人/瀏覽器/AI（德語無美英之分）
 function spkWord3(text) {
   if (!text) return '';
   const t = esc(text);
-  return `<span class="spk-group">`
-    + `<button class="speak-btn" data-speak="${t}" data-src="us" title="美式真人錄音" type="button">🔊美</button>`
-    + `<button class="speak-btn" data-speak="${t}" data-src="uk" title="英式真人錄音" type="button">🔊英</button>`
-    + `<button class="speak-btn" data-speak="${t}" data-src="browser" title="瀏覽器語音" type="button">🔊瀏</button>`
-    + `<button class="speak-btn" data-speak="${t}" data-src="ai" title="AI 語音（臨時生成）" type="button">🤖</button>`
-    + `</span>`;
+  const btn = (src, label, title) => `<button class="speak-btn" data-speak="${t}" data-src="${src}" title="${title}" type="button">${label}</button>`;
+  let inner;
+  if (currentLang === 'en') {
+    inner = btn('us', '🔊美', '美式真人錄音') + btn('uk', '🔊英', '英式真人錄音');
+  } else {
+    inner = btn('dict', '🔊真人', `${L().label}真人錄音`);
+  }
+  inner += btn('browser', '🔊瀏', '瀏覽器語音') + btn('ai', '🤖', 'AI 語音（臨時生成）');
+  return `<span class="spk-group">${inner}</span>`;
 }
 // 一般單字（詞形變化、派生詞）：依設定口音的字典發音 + AI
 function spkw(word) {
@@ -503,6 +506,9 @@ function updateLangUI() {
     b.classList.toggle('active', b.dataset.lang === currentLang));
   const brand = $('.brand h1');
   if (brand) brand.textContent = currentLang === 'de' ? '快速背德文' : '快速背單字';
+  // 美式/英式口音只對英文有意義，德文時隱藏
+  const af = $('#accentField');
+  if (af) af.style.display = currentLang === 'en' ? '' : 'none';
 }
 function switchLang(lang) {
   if (!LANGS[lang] || lang === currentLang) return;

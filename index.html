@@ -222,8 +222,8 @@
         <textarea id="apiKeysInput" rows="4" placeholder="每行貼一組金鑰，多組會輪流使用，某組額度用完會自動換下一組" autocomplete="off" spellcheck="false"></textarea>
         <span class="field-help">金鑰只存在你自己的瀏覽器（localStorage），不會上傳到任何伺服器。一律使用 <b>Vertex AI 通道</b>（<code>aiplatform.googleapis.com</code>），請填入 <code>AQ.</code> 開頭的 Vertex AI Express 金鑰。</span>
       </label>
-      <label class="field">
-        <span class="field-label">單詞發音口音</span>
+      <label class="field" id="accentField">
+        <span class="field-label">單詞發音口音（僅英文）</span>
         <select id="accentSelect">
           <option value="us">美式（US）</option>
           <option value="uk">英式（UK）</option>
