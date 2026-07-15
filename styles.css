@@ -96,17 +96,48 @@ body {
 .nav-btn:hover { background: var(--bg-soft); color: var(--text); }
 .nav-btn.active { background: var(--primary-soft); color: var(--primary); }
 
-.lang-switch { margin-left: auto; display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.lang-switch { margin-left: auto; display: inline-flex; flex-wrap: wrap; gap: 4px; max-width: 100%; }
 .lang-switch .lang-btn {
-  border: none; background: var(--bg-soft); color: var(--text-soft);
-  padding: 8px 12px; font-size: 13px; font-weight: 700; cursor: pointer; font-family: inherit;
-  transition: background .15s, color .15s;
+  position: relative; border: 1px solid var(--border); background: var(--bg-soft); color: var(--text-soft);
+  padding: 6px 10px; font-size: 13px; font-weight: 700; cursor: pointer; font-family: inherit;
+  border-radius: 8px; transition: background .15s, color .15s;
 }
-.lang-switch .lang-btn + .lang-btn { border-left: 1px solid var(--border); }
 .lang-switch .lang-btn:hover { background: var(--bg-elev); }
-.lang-switch .lang-btn.active { background: var(--primary); color: #fff; }
+.lang-switch .lang-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.lang-switch .lang-add { color: var(--text-mute); font-weight: 800; }
+.lang-switch .lang-del {
+  display: none; position: absolute; top: -6px; right: -6px; width: 15px; height: 15px; line-height: 14px;
+  text-align: center; font-size: 11px; border-radius: 50%; background: var(--again); color: #fff;
+}
+.lang-switch .lang-btn:hover .lang-del { display: block; }
 
 .cloud-status { font-size: 12px; color: var(--text-mute); white-space: nowrap; margin-left: 12px; }
+.login-gate {
+  position: fixed; inset: 0; z-index: 2000; display: flex; align-items: center; justify-content: center;
+  background: var(--bg); padding: 24px;
+}
+.login-gate[hidden] { display: none; }
+.login-gate-card {
+  max-width: 380px; width: 100%; text-align: center; padding: 40px 28px;
+  background: var(--bg-soft); border: 1px solid var(--border); border-radius: 18px;
+  box-shadow: 0 10px 40px rgba(0,0,0,.12);
+}
+.login-gate-card .logo {
+  display: inline-flex; align-items: center; justify-content: center; width: 56px; height: 56px;
+  background: var(--primary); color: #fff; font-size: 26px; font-weight: 800; border-radius: 16px; margin-bottom: 14px;
+}
+.login-gate-card h1 { font-size: 24px; margin: 0 0 10px; color: var(--text); }
+.login-gate-card p { color: var(--text-soft); font-size: 14px; line-height: 1.6; margin: 0 0 20px; }
+.gate-btn { width: 100%; padding: 12px; font-size: 15px; }
+.gate-status { min-height: 18px; font-size: 13px; color: var(--text-mute); margin-top: 14px !important; }
+
+.login-btn {
+  margin-left: 8px; padding: 6px 12px; font-size: 13px; font-weight: 700; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); color: var(--text-soft);
+  font-family: inherit; white-space: nowrap; transition: background .15s, color .15s;
+}
+.login-btn:hover { background: var(--bg-elev); }
+.login-btn.signed-in { background: var(--primary); color: #fff; border-color: var(--primary); }
 .cloud-status + .theme-toggle { margin-left: 12px; }
 .theme-toggle { margin-left: 12px; }
 

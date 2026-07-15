@@ -20,28 +20,59 @@ const LS_LANG = 'vocab_lang_v1';
 const DAILY_MODES = ['en2zh', 'zh2en', 'spelling'];
 const NO_FOLDER = '__none__';
 
-/* ---------------------- 多語言（英文 / 德文，資料分開） ---------------------- */
-const LANGS = {
-  en: {
-    code: 'en', label: '英文', name: '英文', teacher: '英文單字整理老師',
-    collection: 'cards', dictLang: 'en', speech: { us: 'en-US', uk: 'en-GB', def: 'en-US' },
-    fwd: '英 → 中', bwd: '中 → 英',
-    fwdDesc: '看英文單字，回想中文意思', bwdDesc: '看中文意思，回想英文單字',
-    askMeaning: '這個字的意思是？', askWord: '對應的英文單字是？',
-  },
-  de: {
-    code: 'de', label: '德文', name: '德文', teacher: '德文單字整理老師',
-    collection: 'cards_de', dictLang: 'de', speech: { us: 'de-DE', uk: 'de-DE', def: 'de-DE' },
-    fwd: '德 → 中', bwd: '中 → 德',
-    fwdDesc: '看德文單字，回想中文意思', bwdDesc: '看中文意思，回想德文單字',
-    askMeaning: '這個字的意思是？', askWord: '對應的德文單字是？',
-  },
+/* ---------------------- 多語言（各語言資料完全分開） ---------------------- */
+const LS_CUSTOM_LANGS = 'vocab_custom_langs_v1';
+// 由簡短規格產生一個語言設定
+function makeLang(code, label, name, speech, dictLang) {
+  return {
+    code, label, name, teacher: `${name}單字整理老師`,
+    collection: code === 'en' ? 'cards' : `cards_${code}`,
+    dictLang: dictLang || (speech ? speech.split('-')[0] : code),
+    speech: { us: speech, uk: speech, def: speech },
+    fwd: `${label} → 中`, bwd: `中 → ${label}`,
+    fwdDesc: `看${name}單字，回想中文意思`, bwdDesc: `看中文意思，回想${name}單字`,
+    askMeaning: '這個字的意思是？', askWord: `對應的${name}單字是？`,
+    custom: false,
+  };
+}
+const BUILTIN_LANGS = {
+  en: makeLang('en', '英', '英文', 'en-US', 'en'),
+  de: makeLang('de', '德', '德文', 'de-DE', 'de'),
+  ja: makeLang('ja', '日', '日文', 'ja-JP', 'ja'),
+  fr: makeLang('fr', '法', '法文', 'fr-FR', 'fr'),
+  ko: makeLang('ko', '韓', '韓文', 'ko-KR', 'ko'),
+  es: makeLang('es', '西', '西班牙文', 'es-ES', 'es'),
+  nl: makeLang('nl', '荷', '荷蘭文', 'nl-NL', 'nl'),
+  ru: makeLang('ru', '俄', '俄文', 'ru-RU', 'ru'),
+  vi: makeLang('vi', '越', '越南文', 'vi-VN', 'vi'),
 };
+// 英文標題單字保留美式/英式之分
+BUILTIN_LANGS.en.speech = { us: 'en-US', uk: 'en-GB', def: 'en-US' };
+
+let customLangs = {}; // { code: langConfig }（使用者自訂，存 localStorage）
+function loadCustomLangs() {
+  const raw = loadJSON(LS_CUSTOM_LANGS, {});
+  customLangs = {};
+  Object.keys(raw || {}).forEach(code => {
+    const c = raw[code];
+    if (c && c.name) { const l = makeLang(code, c.label || c.name.slice(0, 1), c.name, c.speech || '', c.dictLang || ''); l.custom = true; customLangs[code] = l; }
+  });
+}
+function saveCustomLangs() {
+  const out = {};
+  Object.values(customLangs).forEach(l => { out[l.code] = { label: l.label, name: l.name, speech: l.speech.def, dictLang: l.dictLang }; });
+  localStorage.setItem(LS_CUSTOM_LANGS, JSON.stringify(out));
+}
+function allLangs() { return { ...BUILTIN_LANGS, ...customLangs }; }
+
 let currentLang = localStorage.getItem(LS_LANG) || 'en';
-if (!LANGS[currentLang]) currentLang = 'en';
-function L() { return LANGS[currentLang]; }
-// 依語言取得 localStorage key（英文沿用舊 key，其他語言加後綴，資料互不干擾）
-function nsKey(base) { return currentLang === 'en' ? base : `${base}_${currentLang}`; }
+let currentUid = null; // 目前登入者 uid（每位使用者資料分開）
+function L() { return allLangs()[currentLang] || BUILTIN_LANGS.en; }
+// 依語言＋使用者取得 localStorage key（各語言、各使用者資料互不干擾）
+function nsKey(base) {
+  const lang = currentLang === 'en' ? base : `${base}_${currentLang}`;
+  return currentUid ? `${lang}__u_${currentUid}` : lang;
+}
 // 依語言調整背誦模式的顯示名稱
 function applyLangToModes() {
   const l = L();
@@ -96,6 +127,21 @@ const DEFAULT_SETTINGS = {
 };
 
 let keyIndex = 0;          // 金鑰輪詢游標
+
+// 環境變數金鑰（部署時由 Vercel Serverless /api/keys 提供）；設定頁手動輸入者優先
+let envKeys = [];
+function activeKeys() {
+  const s = (settings.apiKeys || []).filter(Boolean);
+  return s.length ? s : envKeys.filter(Boolean);
+}
+async function loadEnvKeys() {
+  try {
+    const res = await fetch('/api/keys', { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (Array.isArray(data.keys)) envKeys = data.keys.filter(Boolean);
+  } catch { /* 本機或未部署時忽略 */ }
+}
 
 /* ---------------------- 狀態 ---------------------- */
 let cards = [];        // 全部卡片
@@ -237,7 +283,7 @@ function pcmB64ToWavUrl(b64, sampleRate) {
 let ttsBusy = false;
 async function speakGeminiTTS(text) {
   if (!text) return;
-  const keys = (settings.apiKeys || []).filter(Boolean);
+  const keys = activeKeys();
   if (!keys.length) { toast('尚未設定 API 金鑰', true); return; }
   if (ttsBusy) return;
   ttsBusy = true;
@@ -320,6 +366,8 @@ function toast(msg, isErr = false) {
    初始化
    ========================================================================= */
 function init() {
+  loadCustomLangs();
+  if (!allLangs()[currentLang]) currentLang = 'en';
   cards = loadJSON(nsKey(LS_CARDS), []);
   settings = { ...DEFAULT_SETTINGS, ...loadJSON(LS_SETTINGS, {}) };
   folders = loadJSON(nsKey(LS_FOLDERS), []);
@@ -329,6 +377,7 @@ function init() {
   migrateCards();
   rolloverDaily();
   applyLangToModes();
+  loadEnvKeys();
 
   applyTheme(localStorage.getItem(LS_THEME) || 'light');
   // 全域喇叭朗讀（事件委派）
@@ -372,9 +421,119 @@ function init() {
   renderDeck();
   renderModeGrid();
 
-  // 啟動雲端同步（Firestore 模組載入後）
+  // 需要登入才能使用；等 Auth 模組載入後由登入狀態驅動資料載入
+  if (window.Auth) bindAuth();
+  else window.addEventListener('cloud-ready', () => bindAuth(), { once: true });
+}
+
+/* ---------------------- Google 登入（必須登入） ---------------------- */
+const MIGRATE_OWNER_EMAIL = 'lcy101120@gmail.com'; // 舊資料歸屬的帳號
+const LS_MIGRATED = 'vocab_migrated_lcy_v1';
+let authBound = false;
+
+function showGate(show, status) {
+  const gate = $('#loginGate');
+  if (gate) gate.hidden = !show;
+  if (status !== undefined) { const s = $('#gateStatus'); if (s) s.textContent = status; }
+}
+
+function bindAuth() {
+  const topBtn = $('#loginBtn');
+  const gateBtn = $('#gateLoginBtn');
+  // 無 Auth（例如未部署 Firebase）：不強制登入，維持本機資料
+  if (!window.Auth || !window.Auth.enabled) {
+    showGate(false);
+    if (topBtn) topBtn.style.display = 'none';
+    if (window.Cloud && window.Cloud.enabled) startCloud();
+    return;
+  }
+  if (authBound) return;
+  authBound = true;
+
+  gateBtn?.addEventListener('click', () => { showGate(true, '登入中…'); window.Auth.signInGoogle(); });
+  topBtn?.addEventListener('click', () => {
+    if (window.Auth.user) { if (confirm('確定要登出嗎？')) window.Auth.signOut(); }
+    else window.Auth.signInGoogle();
+  });
+
+  window.Auth.onChange(u => { onAuthChanged(u); });
+}
+
+async function onAuthChanged(u) {
+  const topBtn = $('#loginBtn');
+  if (!u) {
+    // 未登入：清空畫面、顯示登入牆
+    currentUid = null;
+    if (window.Cloud?.setUser) window.Cloud.setUser(null);
+    if (cloudUnsub) { try { cloudUnsub(); } catch { } cloudUnsub = null; }
+    cards = [];
+    if (topBtn) { topBtn.textContent = '登入'; topBtn.title = '以 Google 登入'; topBtn.classList.remove('signed-in'); }
+    setCloudBadge('');
+    renderDeck();
+    showGate(true, '');
+    return;
+  }
+  // 已登入
+  currentUid = u.uid;
+  if (window.Cloud?.setUser) window.Cloud.setUser(u.uid);
+  const name = u.displayName || u.email || '已登入';
+  if (topBtn) { topBtn.textContent = '登出'; topBtn.title = `${name}（點擊登出）`; topBtn.classList.add('signed-in'); }
+  showGate(true, '載入中…');
+
+  // 舊資料一次性歸戶到指定帳號
+  if ((u.email || '').toLowerCase() === MIGRATE_OWNER_EMAIL && !localStorage.getItem(LS_MIGRATED)) {
+    try { await migrateLegacyToUser(u.uid); localStorage.setItem(LS_MIGRATED, '1'); }
+    catch (e) { console.error('舊資料歸戶失敗', e); }
+  }
+
+  // 載入該使用者的本機快取（雲端載入後會覆蓋為單一真實來源）
+  loadUserLocalData();
+  applyLangToModes();
+  updateLangUI();
+  renderFolderSelects();
+  renderDailyPanel();
+  renderDeck();
+  renderModeGrid();
   if (window.Cloud && window.Cloud.enabled) startCloud();
-  else window.addEventListener('cloud-ready', () => { if (window.Cloud && window.Cloud.enabled) startCloud(); }, { once: true });
+  showGate(false);
+}
+
+// 重新載入目前使用者 + 目前語言的本機資料
+function loadUserLocalData() {
+  cards = loadJSON(nsKey(LS_CARDS), []);
+  folders = loadJSON(nsKey(LS_FOLDERS), []);
+  daily = loadJSON(nsKey(LS_DAILY), { date: todayStr(), count: 0, streak: 0, lastMetDate: '', countedIds: [] });
+  if (!Array.isArray(daily.countedIds)) daily.countedIds = [];
+  rolloverDaily();
+  migrateCards();
+}
+
+// 把舊的共用資料（Firestore 頂層集合 + 本機舊 key）搬到 users/{uid} 底下
+async function migrateLegacyToUser(uid) {
+  const langs = allLangs();
+  for (const l of Object.values(langs)) {
+    const col = l.collection;
+    // 1) Firestore 頂層集合 → users/{uid}/col
+    if (window.Cloud?.migrateLegacy) {
+      try { await window.Cloud.migrateLegacy(uid, col); } catch (e) { console.error(e); }
+    }
+    // 2) 本機舊快取（未帶 uid 的 key）→ 補上雲端，避免只存在離線的卡片遺失
+    const base = l.code === 'en' ? LS_CARDS : `${LS_CARDS}_${l.code}`;
+    const legacyCards = loadJSON(base, []);
+    if (Array.isArray(legacyCards) && legacyCards.length && window.Cloud?.setCollection && window.Cloud?.bulk) {
+      window.Cloud.setCollection(col);
+      try { await window.Cloud.bulk(legacyCards); } catch (e) { console.error(e); }
+    }
+    // 3) 資料夾／每日進度：把舊 key 複製到帶 uid 的新 key（若尚未存在）
+    const fBase = l.code === 'en' ? LS_FOLDERS : `${LS_FOLDERS}_${l.code}`;
+    const dBase = l.code === 'en' ? LS_DAILY : `${LS_DAILY}_${l.code}`;
+    const fNew = `${fBase}__u_${uid}`;
+    const dNew = `${dBase}__u_${uid}`;
+    if (localStorage.getItem(fBase) && !localStorage.getItem(fNew)) localStorage.setItem(fNew, localStorage.getItem(fBase));
+    if (localStorage.getItem(dBase) && !localStorage.getItem(dNew)) localStorage.setItem(dNew, localStorage.getItem(dBase));
+  }
+  // 還原目前語言集合
+  if (window.Cloud?.setCollection) window.Cloud.setCollection(L().collection);
 }
 
 /* ---------------------- 雲端同步 ---------------------- */
@@ -497,21 +656,58 @@ function bindTheme() {
 /* ---------------------- 語言切換（英文 / 德文） ---------------------- */
 function bindLang() {
   $('#langSwitch')?.addEventListener('click', e => {
+    if (e.target.closest('[data-add-lang]')) { addCustomLang(); return; }
+    const del = e.target.closest('[data-del-lang]');
+    if (del) { e.stopPropagation(); removeCustomLang(del.dataset.delLang); return; }
     const b = e.target.closest('[data-lang]');
     if (b) switchLang(b.dataset.lang);
   });
 }
+function renderLangSwitch() {
+  const box = $('#langSwitch');
+  if (!box) return;
+  const langs = allLangs();
+  box.innerHTML = Object.values(langs).map(l => {
+    const active = l.code === currentLang ? ' active' : '';
+    const del = l.custom ? `<span class="lang-del" data-del-lang="${l.code}" title="刪除此語言">×</span>` : '';
+    return `<button class="lang-btn${active}" data-lang="${l.code}" title="${l.name}">${l.label}${del}</button>`;
+  }).join('') + `<button class="lang-btn lang-add" data-add-lang title="新增自訂語言">＋</button>`;
+}
 function updateLangUI() {
-  document.querySelectorAll('#langSwitch [data-lang]').forEach(b =>
-    b.classList.toggle('active', b.dataset.lang === currentLang));
+  renderLangSwitch();
   const brand = $('.brand h1');
-  if (brand) brand.textContent = currentLang === 'de' ? '快速背德文' : '快速背單字';
-  // 美式/英式口音只對英文有意義，德文時隱藏
+  if (brand) brand.textContent = currentLang === 'en' ? '快速背單字' : `快速背${L().label}文`;
+  // 美式/英式口音只對英文有意義，其他語言隱藏
   const af = $('#accentField');
   if (af) af.style.display = currentLang === 'en' ? '' : 'none';
 }
+function addCustomLang() {
+  const name = (prompt('語言名稱（例如：義大利文）')||'').trim();
+  if (!name) return;
+  let label = (prompt('顯示按鈕文字（建議一個字，例如：義）', name.slice(0,1))||'').trim();
+  if (!label) label = name.slice(0,1);
+  const speech = (prompt('語音代碼 BCP-47（例如義大利文為 it-IT，可留空用瀏覽器預設）','')||'').trim();
+  // 產生唯一代碼
+  let code = 'c_' + Date.now().toString(36);
+  const l = makeLang(code, label, name, speech, speech ? speech.split('-')[0] : '');
+  l.custom = true;
+  customLangs[code] = l;
+  saveCustomLangs();
+  switchLang(code);
+}
+function removeCustomLang(code) {
+  const l = customLangs[code];
+  if (!l) return;
+  if (!confirm(`確定刪除自訂語言「${l.name}」？（該語言的本機資料索引會保留，但按鈕會移除）`)) return;
+  const wasCurrent = currentLang === code;
+  delete customLangs[code];
+  saveCustomLangs();
+  if (wasCurrent) switchLang('en'); // currentLang 仍為 code，switchLang('en') 會正常重載
+  else renderLangSwitch();
+}
 function switchLang(lang) {
-  if (!LANGS[lang] || lang === currentLang) return;
+  if (!allLangs()[lang]) return;
+  if (lang === currentLang) { renderLangSwitch(); return; }
   currentLang = lang;
   localStorage.setItem(LS_LANG, lang);
   // 重新載入該語言的資料（各語言互不干擾）
@@ -701,7 +897,7 @@ async function requestGemini(key, body) {
 // ---- 全域併發限制器（避免同時打太多請求）----
 let inFlight = 0;
 const waitQueue = [];
-function globalLimit() { return Math.max(1, (settings.apiKeys || []).filter(Boolean).length || 1); }
+function globalLimit() { return Math.max(1, activeKeys().length || 1); }
 function acquireSlot() {
   return new Promise(resolve => {
     if (inFlight < globalLimit()) { inFlight++; resolve(); }
@@ -715,7 +911,7 @@ function releaseSlot() {
 
 // 產生單一段落的 JSON（含金鑰輪詢、重試、併發限制）
 async function generateJSON(promptText, schema) {
-  const keys = (settings.apiKeys || []).filter(Boolean);
+  const keys = activeKeys();
   if (keys.length === 0) throw new Error('尚未設定 API 金鑰，請到「設定」填入。');
   const body = {
     contents: [{ role: 'user', parts: [{ text: promptText }] }],
@@ -928,7 +1124,7 @@ function bindBatch() {
 }
 
 function batchConcurrency() {
-  return Math.max(1, (settings.apiKeys || []).filter(Boolean).length || 1);
+  return Math.max(1, activeKeys().length || 1);
 }
 
 function addBatchItem() {
@@ -2155,7 +2351,9 @@ function bindSettings() {
     keyIndex = 0;
     saveSettings();
     renderDailyPanel();
-    $('#settingsStatus').textContent = `✅ 已儲存（${settings.apiKeys.length} 組金鑰）`;
+    $('#settingsStatus').textContent = settings.apiKeys.length
+      ? `✅ 已儲存（${settings.apiKeys.length} 組金鑰）`
+      : (envKeys.length ? `✅ 已儲存（使用 Vercel 環境變數 ${envKeys.length} 組）` : '✅ 已儲存（尚無金鑰）');
     toast('設定已儲存');
     setTimeout(() => $('#settingsStatus').textContent = '', 2500);
   });
