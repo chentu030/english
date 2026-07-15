@@ -380,6 +380,7 @@ input:focus, textarea:focus, select:focus {
 }
 .pill b { color: var(--primary); }
 .pill .pill-zh { color: var(--text-mute); font-size: 13px; margin-left: 5px; }
+.pill .speak-btn { font-size: 12px; padding: 0 3px; margin-left: 2px; }
 .mnemonic {
   background: linear-gradient(135deg, var(--primary-soft), transparent);
   border: 1px dashed var(--primary);

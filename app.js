@@ -957,13 +957,13 @@ function buildEntryHtml(d, editable) {
     : (d.etymology ? `<div class="example">${esc(d.etymology)}</div>` : '');
 
   const pairPills = (arr, k1, k2) => arr && arr.length
-    ? `<div class="pill-list">${arr.map(x => `<span class="pill"><b>${esc(x[k1])}</b><span class="pill-zh">${esc(x[k2] || '')}</span></span>`).join('')}</div>` : '';
+    ? `<div class="pill-list">${arr.map(x => `<span class="pill"><b>${esc(x[k1])}</b>${spk(x[k1])}<span class="pill-zh">${esc(x[k2] || '')}</span></span>`).join('')}</div>` : '';
 
   const ctxPills = (d.context_words || []).length
-    ? `<div class="pill-list">${d.context_words.map(x => `<span class="pill"><b>${esc(x.word)}</b><span class="pill-zh">${esc(x.meaning || '')}${x.note ? '｜' + esc(x.note) : ''}</span></span>`).join('')}</div>` : '';
+    ? `<div class="pill-list">${d.context_words.map(x => `<span class="pill"><b>${esc(x.word)}</b>${spk(x.word)}<span class="pill-zh">${esc(x.meaning || '')}${x.note ? '｜' + esc(x.note) : ''}</span></span>`).join('')}</div>` : '';
 
   const confus = (d.confusing_words || []).length
-    ? `<div class="pill-list">${d.confusing_words.map(x => `<span class="pill"><b>${esc(x.word)}</b><span class="pill-zh">${esc(x.meaning || '')}${x.difference ? '｜' + esc(x.difference) : ''}</span></span>`).join('')}</div>` : '';
+    ? `<div class="pill-list">${d.confusing_words.map(x => `<span class="pill"><b>${esc(x.word)}</b>${spk(x.word)}<span class="pill-zh">${esc(x.meaning || '')}${x.difference ? '｜' + esc(x.difference) : ''}</span></span>`).join('')}</div>` : '';
 
   const examples = (d.examples || []).length
     ? d.examples.map(x => `<div class="example">${esc(x.en)}${spk(x.en)}<div class="ex-zh">${esc(x.zh || '')}</div></div>`).join('') : '';
