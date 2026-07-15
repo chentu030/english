@@ -287,7 +287,8 @@ function init() {
   cards = loadJSON(LS_CARDS, []);
   settings = { ...DEFAULT_SETTINGS, ...loadJSON(LS_SETTINGS, {}) };
   folders = loadJSON(LS_FOLDERS, []);
-  daily = loadJSON(LS_DAILY, { date: todayStr(), count: 0, streak: 0, lastMetDate: '' });
+  daily = loadJSON(LS_DAILY, { date: todayStr(), count: 0, streak: 0, lastMetDate: '', countedIds: [] });
+  if (!Array.isArray(daily.countedIds)) daily.countedIds = [];
   migrateSettings();
   migrateCards();
   rolloverDaily();
@@ -1366,12 +1367,15 @@ function moveSelectedTo(folder) {
 
 /* ---------------------- 每日目標 / 簽到 ---------------------- */
 function rolloverDaily() {
-  if (daily.date !== todayStr()) { daily.date = todayStr(); daily.count = 0; saveDaily(); }
+  if (daily.date !== todayStr()) { daily.date = todayStr(); daily.count = 0; daily.countedIds = []; saveDaily(); }
 }
-function updateDailyOnReview(mode) {
-  if (!DAILY_MODES.includes(mode)) return;
+// 今日複習目標：每個單字翻過一次就算一個，重複（不同模式/再翻）不重複計
+function updateDailyOnReview(cardId) {
   rolloverDaily();
-  daily.count++;
+  if (!Array.isArray(daily.countedIds)) daily.countedIds = [];
+  if (daily.countedIds.includes(cardId)) return; // 這個字今天已經算過
+  daily.countedIds.push(cardId);
+  daily.count = daily.countedIds.length;
   const goal = settings.dailyGoal || 0;
   if (goal > 0 && daily.count >= goal && daily.lastMetDate !== todayStr()) {
     daily.streak = (daily.lastMetDate === yesterdayStr()) ? (daily.streak + 1) : 1;
@@ -1453,7 +1457,7 @@ function renderDailyPanel() {
     <div class="dp-main">
       <div class="dp-title">📅 今日複習目標 ${met ? '<span class="dp-check">✅ 已簽到</span>' : ''}</div>
       <div class="daily-bar ${met ? 'done' : ''}"><i style="width:${pct}%"></i></div>
-      <div class="dp-num">${count} / ${goal || '—'} 張（中英・克漏字）${met ? '' : goal ? `　還差 ${goal - count} 張` : ''}</div>
+      <div class="dp-num">${count} / ${goal || '—'} 個單字（每字只算一次）${met ? '' : goal ? `　還差 ${goal - count} 個` : ''}</div>
     </div>
     <div class="daily-streak">
       <div class="ds-num">${daily.streak || 0}</div>
@@ -1969,7 +1973,7 @@ function rateCard(rate) {
   // 記錄本輪結果（重來/困難視為不熟）
   session.results.push({ cardId: item.cardId, mode: item.mode, rate, word: card.data.word });
   bumpHistory(); // 熱力圖：每翻一張卡 +1
-  updateDailyOnReview(item.mode);
+  updateDailyOnReview(item.cardId); // 今日目標：同一單字只算一次
 
   session.reviewed++;
   session.idx++;
