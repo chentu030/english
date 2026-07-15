@@ -11,6 +11,12 @@
 const LS_CARDS = 'vocab_cards_v1';
 const LS_SETTINGS = 'vocab_settings_v1';
 const LS_THEME = 'vocab_theme_v1';
+const LS_FOLDERS = 'vocab_folders_v1';
+const LS_DAILY = 'vocab_daily_v1';
+
+// 計入每日目標的模式（中英、克漏字為主）
+const DAILY_MODES = ['en2zh', 'zh2en', 'spelling'];
+const NO_FOLDER = '__none__';
 
 // 背誦模式定義：id、名稱、說明、判斷該卡是否有此模式內容
 const STUDY_MODES = [
@@ -32,6 +38,7 @@ const DEFAULT_SETTINGS = {
   apiKeys: DEFAULT_KEYS.slice(),
   model: 'gemini-3-flash-preview',
   accent: 'us', // us | uk
+  dailyGoal: 20,
 };
 
 let keyIndex = 0;          // 金鑰輪詢游標
@@ -40,6 +47,10 @@ let keyIndex = 0;          // 金鑰輪詢游標
 let cards = [];        // 全部卡片
 let settings = { ...DEFAULT_SETTINGS };
 let pendingCard = null; // 尚未存檔的整理結果
+let folders = [];      // 自訂資料夾名稱
+let daily = null;      // { date, count, streak, lastMetDate }
+let deckFolder = '';   // 詞庫篩選：'' 全部、NO_FOLDER 未分類、否則資料夾名
+let deckSort = 'created_desc';
 
 /* ---------------------- 工具 ---------------------- */
 const $ = sel => document.querySelector(sel);
@@ -50,6 +61,12 @@ const DAY = 86400000;
 function uid() {
   return 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
+
+function dateStr(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function todayStr() { return dateStr(); }
+function yesterdayStr() { const d = new Date(); d.setDate(d.getDate() - 1); return dateStr(d); }
 
 // 詞庫中是否已有這個字（不分大小寫、去頭尾空白）
 function findExistingCard(word) {
@@ -65,6 +82,8 @@ function loadJSON(key, fallback) {
 }
 function saveCards() { localStorage.setItem(LS_CARDS, JSON.stringify(cards)); }
 function saveSettings() { localStorage.setItem(LS_SETTINGS, JSON.stringify(settings)); }
+function saveFolders() { localStorage.setItem(LS_FOLDERS, JSON.stringify(folders)); }
+function saveDaily() { localStorage.setItem(LS_DAILY, JSON.stringify(daily)); }
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c =>
@@ -152,8 +171,11 @@ function toast(msg, isErr = false) {
 function init() {
   cards = loadJSON(LS_CARDS, []);
   settings = { ...DEFAULT_SETTINGS, ...loadJSON(LS_SETTINGS, {}) };
+  folders = loadJSON(LS_FOLDERS, []);
+  daily = loadJSON(LS_DAILY, { date: todayStr(), count: 0, streak: 0, lastMetDate: '' });
   migrateSettings();
   migrateCards();
+  rolloverDaily();
 
   applyTheme(localStorage.getItem(LS_THEME) || 'light');
   // 全域喇叭朗讀（事件委派）
@@ -181,7 +203,11 @@ function init() {
   $('#apiKeysInput').value = (settings.apiKeys || []).join('\n');
   $('#modelSelect').value = settings.model;
   $('#accentSelect').value = settings.accent || 'us';
+  $('#dailyGoalInput').value = settings.dailyGoal || 20;
 
+  bindDeckControls();
+  renderFolderSelects();
+  renderDailyPanel();
   renderDeck();
   renderModeGrid();
 
@@ -278,9 +304,9 @@ function showView(name) {
   $('#view-' + name).classList.add('active');
   $$('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   if (name === 'add') currentEntry = null; // 進入新增頁預設不綁定任何已存卡片
-  if (name === 'deck') renderDeck();
+  if (name === 'deck') { renderFolderSelects(); renderDailyPanel(); renderDeck(); }
   if (name === 'batch') renderBatch();
-  if (name === 'study') { renderModeGrid(); resetStudyToSetup(); }
+  if (name === 'study') { renderModeGrid(); renderFolderSelects(); resetStudyToSetup(); }
 }
 
 function bindNav() {
@@ -1017,6 +1043,7 @@ function bindDeck() {
       }
       return;
     }
+    if (e.target.closest('.wc-folder')) return; // 點資料夾下拉不要開詳情
     const card = e.target.closest('.word-card');
     if (card) openCardDetail(card.dataset.id);
   });
@@ -1027,6 +1054,120 @@ function isNew(state) { return (state.reps || 0) === 0 && (state.due || 0) === 0
 
 function cardDueCount(card) {
   return STUDY_MODES.filter(m => m.has(card.data) && isDue(card.srs[m.id])).length;
+}
+
+/* ---------------------- 資料夾 ---------------------- */
+// 所有資料夾名稱（自訂 + 卡片上出現過的）
+function allFolders() {
+  const set = new Set(folders);
+  cards.forEach(c => { if (c.folder) set.add(c.folder); });
+  return Array.from(set).sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+}
+function folderCount(name) {
+  if (name === NO_FOLDER) return cards.filter(c => !c.folder).length;
+  return cards.filter(c => c.folder === name).length;
+}
+
+function renderFolderSelects() {
+  const list = allFolders();
+  // 詞庫篩選
+  const df = $('#deckFolder');
+  if (df) {
+    df.innerHTML = `<option value="">全部（${cards.length}）</option>`
+      + `<option value="${NO_FOLDER}">未分類（${folderCount(NO_FOLDER)}）</option>`
+      + list.map(f => `<option value="${esc(f)}">${esc(f)}（${folderCount(f)}）</option>`).join('');
+    df.value = deckFolder;
+  }
+  // 背誦範圍
+  const sf = $('#studyFolder');
+  if (sf) {
+    const prev = sf.value;
+    sf.innerHTML = `<option value="">全部</option><option value="${NO_FOLDER}">未分類</option>`
+      + list.map(f => `<option value="${esc(f)}">${esc(f)}</option>`).join('');
+    sf.value = prev || '';
+  }
+}
+
+// 產生卡片上的資料夾下拉
+function folderSelectHtml(card) {
+  const list = allFolders();
+  const opts = `<option value="">未分類</option>`
+    + list.map(f => `<option value="${esc(f)}" ${card.folder === f ? 'selected' : ''}>${esc(f)}</option>`).join('')
+    + `<option value="__new__">＋ 新資料夾…</option>`;
+  return `<select class="wc-folder" data-id="${card.id}">${opts}</select>`;
+}
+
+function createFolder() {
+  const name = (prompt('新資料夾名稱：') || '').trim();
+  if (!name) return '';
+  if (name === NO_FOLDER || name === '__new__') { toast('名稱不可使用', true); return ''; }
+  if (!folders.includes(name)) { folders.push(name); saveFolders(); }
+  renderFolderSelects();
+  return name;
+}
+
+function bindDeckControls() {
+  $('#deckFolder').addEventListener('change', e => { deckFolder = e.target.value; renderDeck(); });
+  $('#deckSort').addEventListener('change', e => { deckSort = e.target.value; renderDeck(); });
+  $('#newFolderBtn').addEventListener('click', () => {
+    const name = createFolder();
+    if (name) { deckFolder = name; renderFolderSelects(); renderDeck(); }
+  });
+  // 卡片上的資料夾下拉（事件委派）
+  $('#deckList').addEventListener('change', e => {
+    const sel = e.target.closest('.wc-folder');
+    if (!sel) return;
+    const card = cards.find(c => c.id === sel.dataset.id);
+    if (!card) return;
+    let val = sel.value;
+    if (val === '__new__') {
+      val = createFolder();
+      if (!val) { renderDeck(); return; }
+    }
+    card.folder = val;
+    saveCards();
+    cloudUpsert(card);
+    renderFolderSelects();
+    renderDeck();
+    toast(val ? `已移到「${val}」` : '已設為未分類');
+  });
+}
+
+/* ---------------------- 每日目標 / 簽到 ---------------------- */
+function rolloverDaily() {
+  if (daily.date !== todayStr()) { daily.date = todayStr(); daily.count = 0; saveDaily(); }
+}
+function updateDailyOnReview(mode) {
+  if (!DAILY_MODES.includes(mode)) return;
+  rolloverDaily();
+  daily.count++;
+  const goal = settings.dailyGoal || 0;
+  if (goal > 0 && daily.count >= goal && daily.lastMetDate !== todayStr()) {
+    daily.streak = (daily.lastMetDate === yesterdayStr()) ? (daily.streak + 1) : 1;
+    daily.lastMetDate = todayStr();
+    toast(`🎉 今日達標！連續簽到 ${daily.streak} 天`);
+  }
+  saveDaily();
+  renderDailyPanel();
+}
+function renderDailyPanel() {
+  const el = $('#dailyPanel');
+  if (!el) return;
+  rolloverDaily();
+  const goal = settings.dailyGoal || 0;
+  const count = daily.count || 0;
+  const pct = goal > 0 ? Math.min(100, Math.round(count / goal * 100)) : 0;
+  const met = goal > 0 && count >= goal;
+  el.innerHTML = `
+    <div class="dp-main">
+      <div class="dp-title">📅 今日複習目標 ${met ? '<span class="dp-check">✅ 已簽到</span>' : ''}</div>
+      <div class="daily-bar ${met ? 'done' : ''}"><i style="width:${pct}%"></i></div>
+      <div class="dp-num">${count} / ${goal || '—'} 張（中英・克漏字）${met ? '' : goal ? `　還差 ${goal - count} 張` : ''}</div>
+    </div>
+    <div class="daily-streak">
+      <div class="ds-num">${daily.streak || 0}</div>
+      <div class="ds-label">連續天數</div>
+    </div>`;
 }
 
 function renderDeck() {
@@ -1048,11 +1189,22 @@ function renderDeck() {
   $('#statDue').textContent = dueTotal + newTotal;
   $('#statNew').textContent = newTotal;
 
-  const filtered = cards.filter(c => {
+  let filtered = cards.filter(c => {
+    // 資料夾篩選
+    if (deckFolder === NO_FOLDER) { if (c.folder) return false; }
+    else if (deckFolder) { if (c.folder !== deckFolder) return false; }
+    // 搜尋
     if (!q) return true;
     const d = c.data;
     const hay = [d.word, ...(d.definitions || []).map(x => x.meaning_zh)].join(' ').toLowerCase();
     return hay.includes(q);
+  });
+
+  // 排序
+  filtered.sort((a, b) => {
+    if (deckSort === 'created_asc') return (a.createdAt || 0) - (b.createdAt || 0);
+    if (deckSort === 'alpha') return (a.data.word || '').localeCompare(b.data.word || '', 'en');
+    return (b.createdAt || 0) - (a.createdAt || 0); // created_desc
   });
 
   if (cards.length === 0) { list.innerHTML = ''; empty.style.display = 'block'; return; }
@@ -1063,10 +1215,11 @@ function renderDeck() {
     const mean = (d.definitions || []).map(x => (x.pos ? x.pos + ' ' : '') + x.meaning_zh).join('；');
     const phon = d.phonetic_us || d.phonetic_uk || '';
     const due = cardDueCount(c);
+    const created = c.createdAt ? dateStr(new Date(c.createdAt)) : '';
     const tags = [];
     if (due > 0) tags.push(`<span class="wc-tag due">待複習 ${due}</span>`);
     if ((d.mnemonics || []).length) tags.push('<span class="wc-tag">💡助記</span>');
-    if ((d.collocations || []).length) tags.push('<span class="wc-tag">🔗搭配</span>');
+    if (created) tags.push(`<span class="wc-tag">🗓 ${created}</span>`);
     return `
       <div class="word-card" data-id="${c.id}">
         <button class="wc-del" title="刪除">✕</button>
@@ -1074,6 +1227,7 @@ function renderDeck() {
         ${phon ? `<div class="wc-phon">${esc(phon)}</div>` : ''}
         <div class="wc-mean">${esc(mean || '（無釋義）')}</div>
         ${tags.length ? `<div class="wc-tags">${tags.join('')}</div>` : ''}
+        ${folderSelectHtml(c)}
       </div>`;
   }).join('');
 }
@@ -1153,9 +1307,14 @@ function startStudy() {
   const modes = getSelectedModes();
   if (modes.length === 0) { toast('請至少選一種背誦模式', true); return; }
   const scope = document.querySelector('input[name="scope"]:checked').value;
+  const limit = parseInt($('#studyLimit').value, 10) || 0;
+  const folder = $('#studyFolder').value;
 
-  const queue = [];
+  let queue = [];
   cards.forEach(c => {
+    // 資料夾篩選
+    if (folder === NO_FOLDER) { if (c.folder) return; }
+    else if (folder) { if (c.folder !== folder) return; }
     modes.forEach(mid => {
       const m = STUDY_MODES.find(x => x.id === mid);
       if (!m.has(c.data)) return;
@@ -1166,7 +1325,7 @@ function startStudy() {
 
   if (queue.length === 0) {
     $('#studySetupHint').textContent = scope === 'due'
-      ? '目前沒有到期的卡片，選「全部卡片」或先新增單字吧！'
+      ? '目前沒有到期的卡片，選「全部卡片」或換個資料夾吧！'
       : '沒有可背誦的卡片，先去新增單字吧！';
     return;
   }
@@ -1178,7 +1337,10 @@ function startStudy() {
     [queue[i], queue[j]] = [queue[j], queue[i]];
   }
 
-  session = { queue, idx: 0, reviewed: 0, total: queue.length };
+  // 限制本次數量
+  if (limit > 0 && queue.length > limit) queue = queue.slice(0, limit);
+
+  session = { queue, idx: 0, reviewed: 0, total: queue.length, results: [] };
   $('#studySetup').hidden = true;
   $('#studyDone').hidden = true;
   $('#studyCard').hidden = false;
@@ -1439,6 +1601,10 @@ function rateCard(rate) {
   saveCards();
   cloudUpsert(card);
 
+  // 記錄本輪結果（重來/困難視為不熟）
+  session.results.push({ cardId: item.cardId, mode: item.mode, rate, word: card.data.word });
+  updateDailyOnReview(item.mode);
+
   session.reviewed++;
   session.idx++;
   if (session.idx >= session.queue.length) {
@@ -1451,9 +1617,61 @@ function rateCard(rate) {
 function finishStudy() {
   $('#studyCard').hidden = true;
   $('#studyDone').hidden = false;
-  $('#doneSummary').textContent = `這輪總共複習了 ${session.reviewed} 張卡片，做得好！`;
+  renderSummary();
   session = null;
+  renderDailyPanel();
   renderDeck();
+}
+
+function renderSummary() {
+  const results = session.results || [];
+  const total = results.length;
+  const missed = results.filter(r => r.rate <= 1); // 重來/困難
+  const ok = total - missed.length;
+  $('#doneSummary').textContent = `這輪複習了 ${total} 張卡片`;
+  $('#doneStats').innerHTML = `
+    <div class="d-item"><div class="d-num ok">${ok}</div><div class="d-label">熟悉（良好/簡單）</div></div>
+    <div class="d-item"><div class="d-num no">${missed.length}</div><div class="d-label">不熟（重來/困難）</div></div>`;
+
+  const missedEl = $('#doneMissed');
+  if (!missed.length) {
+    missedEl.innerHTML = '<p class="hint" style="text-align:center">太棒了，這輪沒有不熟的卡片！</p>';
+    return;
+  }
+  const rateName = { 0: 'again', 1: 'hard' };
+  const rateLabel = { 0: '重來', 1: '困難' };
+  missedEl.innerHTML = `<div class="dm-title">需要加強（點擊展開看細節）：</div>`
+    + missed.map((r, i) => {
+      const mode = STUDY_MODES.find(m => m.id === r.mode);
+      return `<div class="missed-item">
+        <div class="missed-head" data-mi="${i}">
+          <span class="mh-word">${esc(r.word)}</span>
+          <span class="mh-mode">${mode ? mode.name : r.mode}</span>
+          <span class="mh-rate ${rateName[r.rate]}">${rateLabel[r.rate]}</span>
+          <span class="mh-toggle">▾</span>
+        </div>
+        <div class="missed-detail" data-mid="${i}" hidden></div>
+      </div>`;
+    }).join('');
+
+  // 展開/收合看細節
+  missedEl.onclick = e => {
+    const head = e.target.closest('.missed-head');
+    if (!head) return;
+    const i = head.dataset.mi;
+    const detail = missedEl.querySelector(`[data-mid="${i}"]`);
+    if (!detail) return;
+    if (detail.hidden) {
+      const card = cards.find(c => c.id === missed[i].cardId);
+      if (card && !detail.dataset.loaded) {
+        renderPreview(card.data, detail, null); // 唯讀呈現
+        detail.dataset.loaded = '1';
+      }
+      detail.hidden = false;
+    } else {
+      detail.hidden = true;
+    }
+  };
 }
 
 function endStudy() {
@@ -1473,8 +1691,10 @@ function bindSettings() {
     settings.apiKeys = $('#apiKeysInput').value.split('\n').map(k => k.trim()).filter(Boolean);
     settings.model = $('#modelSelect').value;
     settings.accent = $('#accentSelect').value;
+    settings.dailyGoal = Math.max(1, parseInt($('#dailyGoalInput').value, 10) || 20);
     keyIndex = 0;
     saveSettings();
+    renderDailyPanel();
     $('#settingsStatus').textContent = `✅ 已儲存（${settings.apiKeys.length} 組金鑰）`;
     toast('設定已儲存');
     setTimeout(() => $('#settingsStatus').textContent = '', 2500);

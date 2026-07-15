@@ -166,9 +166,10 @@ h3 { font-size: 17px; margin-bottom: 8px; }
 .stat-num { font-size: 32px; font-weight: 800; line-height: 1.1; }
 .stat-label { font-size: 13px; color: var(--text-soft); }
 
-.deck-actions { display: flex; gap: 12px; align-items: center; }
+.deck-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .deck-actions input[type="search"] {
   flex: 1;
+  min-width: 160px;
   padding: 11px 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -177,6 +178,61 @@ h3 { font-size: 17px; margin-bottom: 8px; }
   font-size: 15px;
   font-family: inherit;
 }
+.deck-select {
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-elev); color: var(--text); font-size: 14px; font-family: inherit; cursor: pointer;
+}
+
+/* 每日目標面板 */
+.daily-panel {
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 16px 20px; margin-bottom: 18px;
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+}
+.daily-panel .dp-main { flex: 1; min-width: 220px; }
+.daily-panel .dp-title { font-size: 14px; font-weight: 700; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.daily-panel .dp-title .dp-check { color: var(--good); }
+.daily-bar { height: 10px; background: var(--bg-soft); border-radius: 20px; overflow: hidden; }
+.daily-bar > i { display: block; height: 100%; background: var(--primary); border-radius: 20px; transition: width .4s ease; }
+.daily-bar.done > i { background: var(--good); }
+.daily-panel .dp-num { font-size: 13px; color: var(--text-soft); margin-top: 6px; }
+.daily-streak { text-align: center; }
+.daily-streak .ds-num { font-size: 30px; font-weight: 800; color: var(--accent); line-height: 1; }
+.daily-streak .ds-label { font-size: 12px; color: var(--text-soft); }
+
+.study-options { display: flex; gap: 20px; flex-wrap: wrap; margin: 6px 0 4px; font-size: 14px; color: var(--text-soft); }
+.study-options label { display: flex; align-items: center; gap: 6px; }
+
+/* 卡片上的資料夾標籤 */
+.wc-folder {
+  margin-top: 10px; width: 100%;
+  padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--bg-soft); color: var(--text-soft); font-size: 12px; font-family: inherit; cursor: pointer;
+}
+
+/* 總結畫面 */
+.done-stats { display: flex; justify-content: center; gap: 24px; margin: 16px 0; }
+.done-stats .d-item { text-align: center; }
+.done-stats .d-num { font-size: 28px; font-weight: 800; }
+.done-stats .d-num.ok { color: var(--good); }
+.done-stats .d-num.no { color: var(--again); }
+.done-stats .d-label { font-size: 12px; color: var(--text-soft); }
+.done-missed { max-width: 620px; margin: 0 auto 20px; text-align: left; }
+.done-missed .dm-title { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+.missed-item {
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  margin-bottom: 8px; overflow: hidden;
+}
+.missed-head {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer;
+}
+.missed-head:hover { background: var(--bg-soft); }
+.missed-head .mh-word { font-weight: 700; flex: 1; }
+.missed-head .mh-mode { font-size: 12px; color: var(--text-mute); }
+.missed-head .mh-rate { font-size: 12px; padding: 2px 8px; border-radius: 20px; }
+.missed-head .mh-rate.again { background: rgba(220,59,69,.12); color: var(--again); }
+.missed-head .mh-rate.hard { background: rgba(217,138,31,.14); color: var(--hard); }
+.missed-detail { padding: 0 14px 14px; border-top: 1px solid var(--border); }
 
 .deck-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
 .word-card {

@@ -31,6 +31,7 @@
     <!-- ===================== 詞庫 ===================== -->
     <section id="view-deck" class="view active">
       <div class="deck-header">
+        <div id="dailyPanel" class="daily-panel"></div>
         <div class="stat-cards">
           <div class="stat-card">
             <span class="stat-num" id="statTotal">0</span>
@@ -47,6 +48,13 @@
         </div>
         <div class="deck-actions">
           <input type="search" id="deckSearch" placeholder="搜尋單字…" />
+          <select id="deckFolder" class="deck-select" title="資料夾"></select>
+          <select id="deckSort" class="deck-select" title="排序">
+            <option value="created_desc">建立：新→舊</option>
+            <option value="created_asc">建立：舊→新</option>
+            <option value="alpha">字母 A→Z</option>
+          </select>
+          <button class="btn ghost" id="newFolderBtn">＋ 資料夾</button>
           <button class="btn primary" data-view="study" id="quickStudyBtn">開始背誦 →</button>
         </div>
       </div>
@@ -140,6 +148,21 @@
             <input type="radio" name="scope" value="all" /> 全部卡片（含未到期）
           </label>
         </div>
+        <div class="study-options">
+          <label>本次數量
+            <select id="studyLimit" class="deck-select">
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="30">30</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="0">全部</option>
+            </select> 張
+          </label>
+          <label>資料夾
+            <select id="studyFolder" class="deck-select"></select>
+          </label>
+        </div>
         <button class="btn primary big" id="startStudyBtn">開始背誦</button>
         <p id="studySetupHint" class="hint"></p>
       </div>
@@ -173,6 +196,8 @@
         <p class="done-emoji">🎉</p>
         <h2>本輪完成！</h2>
         <p id="doneSummary" class="hint"></p>
+        <div id="doneStats" class="done-stats"></div>
+        <div id="doneMissed" class="done-missed"></div>
         <button class="btn primary" id="backToSetupBtn">回到背誦選單</button>
       </div>
     </section>
@@ -202,6 +227,11 @@
           <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
           <option value="gemini-2.0-flash">gemini-2.0-flash</option>
         </select>
+      </label>
+      <label class="field">
+        <span class="field-label">每日複習目標（張，以中英與克漏字為主）</span>
+        <input type="number" id="dailyGoalInput" min="1" max="500" step="1" />
+        <span class="field-help">達成後會自動簽到並累計連續天數。</span>
       </label>
       <div class="settings-row">
         <button class="btn primary" id="saveSettingsBtn">儲存設定</button>
