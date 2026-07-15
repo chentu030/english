@@ -1135,11 +1135,14 @@ function renderEditor(data, container, onChange) {
 function bindDeck() {
   $('#deckSearch').addEventListener('input', renderDeck);
   $('#deckList').addEventListener('click', e => {
+    if (e.target.closest('.speak-btn')) return; // 喇叭交給全域處理，不開詳情
     if (selectMode) {
+      if (e.target.closest('.wc-mnem')) return; // 選取模式下讓助記下拉正常展開
       const card = e.target.closest('.word-card');
       if (card) toggleSelect(card.dataset.id);
       return;
     }
+    if (e.target.closest('.wc-mnem')) return; // 點助記下拉不要開詳情
     const del = e.target.closest('.wc-del');
     if (del) {
       e.stopPropagation();
@@ -1411,20 +1414,26 @@ function renderDeck() {
     const phon = d.phonetic_us || d.phonetic_uk || '';
     const due = cardDueCount(c);
     const created = c.createdAt ? dateStr(new Date(c.createdAt)) : '';
+    const mnems = d.mnemonics || [];
     const tags = [];
     if (due > 0) tags.push(`<span class="wc-tag due">待複習 ${due}</span>`);
-    if ((d.mnemonics || []).length) tags.push('<span class="wc-tag">💡助記</span>');
     if (created) tags.push(`<span class="wc-tag">🗓 ${created}</span>`);
+    const mnemDrop = mnems.length ? `
+      <details class="wc-mnem">
+        <summary>💡 助記法（${mnems.length}）</summary>
+        <div class="wc-mnem-body">${mnems.map(m => `<div class="wc-mnem-item"><span class="mn-type">${esc(m.type || '助記')}</span>${esc(m.content)}</div>`).join('')}</div>
+      </details>` : '';
     const checked = selectedIds.has(c.id);
     return `
       <div class="word-card${selectMode ? ' selecting' : ''}${checked ? ' checked' : ''}" data-id="${c.id}">
         ${selectMode
         ? `<input type="checkbox" class="wc-check" ${checked ? 'checked' : ''} tabindex="-1" />`
         : `<button class="wc-del" title="刪除">✕</button>`}
-        <div class="wc-word">${esc(d.word)}</div>
+        <div class="wc-word">${esc(d.word)}${spkWord3(d.word)}</div>
         ${phon ? `<div class="wc-phon">${esc(phon)}</div>` : ''}
         <div class="wc-mean">${esc(mean || '（無釋義）')}</div>
         ${tags.length ? `<div class="wc-tags">${tags.join('')}</div>` : ''}
+        ${mnemDrop}
         ${selectMode ? '' : folderSelectHtml(c)}
       </div>`;
   }).join('');
