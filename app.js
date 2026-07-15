@@ -13,6 +13,7 @@ const LS_SETTINGS = 'vocab_settings_v1';
 const LS_THEME = 'vocab_theme_v1';
 const LS_FOLDERS = 'vocab_folders_v1';
 const LS_DAILY = 'vocab_daily_v1';
+const LS_DAILY_HIST = 'vocab_daily_hist_v1'; // { 'YYYY-MM-DD': 翻閱張數 }
 
 // 計入每日目標的模式（中英、克漏字為主）
 const DAILY_MODES = ['en2zh', 'zh2en', 'spelling'];
@@ -40,6 +41,15 @@ function cardBasicLearned(card) {
 function modeUnlocked(card, modeId) {
   if (BASIC_MODES.includes(modeId)) return true;
   return cardBasicLearned(card);
+}
+// 這個字是否「還沒遇到」（基礎模式都沒學過）
+function cardNeverStudied(card) {
+  return BASIC_MODES.every(id => isNew(card.srs[id] || {}));
+}
+// 這個字今天是否有「已解鎖且到期」的複習項目（且已開始學過）
+function cardHasDueToday(card) {
+  if (cardNeverStudied(card)) return false;
+  return STUDY_MODES.some(m => m.has(card.data) && modeUnlocked(card, m.id) && isDue(card.srs[m.id]));
 }
 
 // 金鑰不寫死在會被公開的程式碼裡。
@@ -100,6 +110,13 @@ function saveCards() { localStorage.setItem(LS_CARDS, JSON.stringify(cards)); }
 function saveSettings() { localStorage.setItem(LS_SETTINGS, JSON.stringify(settings)); }
 function saveFolders() { localStorage.setItem(LS_FOLDERS, JSON.stringify(folders)); }
 function saveDaily() { localStorage.setItem(LS_DAILY, JSON.stringify(daily)); }
+// 每翻閱一張卡就在當日 +1（供 GitHub 風格熱力圖使用）
+function bumpHistory() {
+  const hist = loadJSON(LS_DAILY_HIST, {});
+  const k = todayStr();
+  hist[k] = (hist[k] || 0) + 1;
+  localStorage.setItem(LS_DAILY_HIST, JSON.stringify(hist));
+}
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c =>
@@ -1364,6 +1381,43 @@ function updateDailyOnReview(mode) {
   saveDaily();
   renderDailyPanel();
 }
+// GitHub 風格熱力圖：越深代表當天翻閱越多張卡
+function heatLevel(n) {
+  if (n <= 0) return 0;
+  if (n < 3) return 1;
+  if (n < 6) return 2;
+  if (n < 11) return 3;
+  return 4;
+}
+function renderHeatmap() {
+  const hist = loadJSON(LS_DAILY_HIST, {});
+  const weeks = 15;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  // 對齊到本週週日；讓今天落在最後一欄
+  const start = new Date(today);
+  start.setDate(today.getDate() - today.getDay() - (weeks - 1) * 7);
+  let total = 0;
+  let cols = '';
+  for (let w = 0; w < weeks; w++) {
+    let cells = '';
+    for (let d = 0; d < 7; d++) {
+      const cur = new Date(start);
+      cur.setDate(start.getDate() + w * 7 + d);
+      const key = dateStr(cur);
+      const future = cur > today;
+      const n = hist[key] || 0;
+      if (!future) total += n;
+      const lvl = future ? 'f' : heatLevel(n);
+      cells += `<span class="heat-cell l${lvl}" title="${key}｜${future ? '—' : n + ' 張'}"></span>`;
+    }
+    cols += `<div class="heat-col">${cells}</div>`;
+  }
+  return `<div class="dp-heat">
+      <div class="heat-title">最近複習（越深＝翻越多張）</div>
+      <div class="heat-grid">${cols}</div>
+    </div>`;
+}
+
 function renderDailyPanel() {
   const el = $('#dailyPanel');
   if (!el) return;
@@ -1373,6 +1427,7 @@ function renderDailyPanel() {
   const pct = goal > 0 ? Math.min(100, Math.round(count / goal * 100)) : 0;
   const met = goal > 0 && count >= goal;
   el.innerHTML = `
+    ${renderHeatmap()}
     <div class="dp-main">
       <div class="dp-title">📅 今日複習目標 ${met ? '<span class="dp-check">✅ 已簽到</span>' : ''}</div>
       <div class="daily-bar ${met ? 'done' : ''}"><i style="width:${pct}%"></i></div>
@@ -1389,19 +1444,14 @@ function renderDeck() {
   const list = $('#deckList');
   const empty = $('#deckEmpty');
 
-  // 統計
+  // 統計（以「單字」為單位）
   let dueTotal = 0, newTotal = 0;
   cards.forEach(c => {
-    STUDY_MODES.forEach(m => {
-      if (!m.has(c.data)) return;
-      if (!modeUnlocked(c, m.id)) return; // 未解鎖的進階模式不計入
-      const s = c.srs[m.id];
-      if (isNew(s)) newTotal++;
-      else if (isDue(s)) dueTotal++;
-    });
+    if (cardNeverStudied(c)) newTotal++;        // 還沒遇到的字
+    else if (cardHasDueToday(c)) dueTotal++;     // 有到期複習的字
   });
   $('#statTotal').textContent = cards.length;
-  $('#statDue').textContent = dueTotal + newTotal;
+  $('#statDue').textContent = dueTotal;
   $('#statNew').textContent = newTotal;
 
   let filtered = cards.filter(c => {
@@ -1896,6 +1946,7 @@ function rateCard(rate) {
 
   // 記錄本輪結果（重來/困難視為不熟）
   session.results.push({ cardId: item.cardId, mode: item.mode, rate, word: card.data.word });
+  bumpHistory(); // 熱力圖：每翻一張卡 +1
   updateDailyOnReview(item.mode);
 
   session.reviewed++;
