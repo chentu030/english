@@ -49,6 +49,12 @@ function uid() {
   return 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
+// 詞庫中是否已有這個字（不分大小寫、去頭尾空白）
+function findExistingCard(word) {
+  const w = (word || '').trim().toLowerCase();
+  return cards.find(c => (c.data.word || '').trim().toLowerCase() === w);
+}
+
 function loadJSON(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
@@ -559,6 +565,8 @@ async function onGenerate() {
   const raw = $('#rawInput').value.trim();
   if (!word) { toast('請先輸入單字', true); $('#wordInput').focus(); return; }
 
+  if (findExistingCard(word) && !confirm(`「${word}」已經在詞庫中了，仍要重新整理一張新的嗎？`)) return;
+
   const status = $('#genStatus');
   const btn = $('#generateBtn');
   status.hidden = false;
@@ -637,6 +645,18 @@ function addBatchItem() {
   const word = $('#batchWord').value.trim();
   const raw = $('#batchRaw').value.trim();
   if (!word) { toast('請先輸入單字', true); $('#batchWord').focus(); return; }
+
+  const wl = word.toLowerCase();
+  const inDeck = !!findExistingCard(word);
+  const inQueue = batchItems.some(it => it.word.trim().toLowerCase() === wl);
+  if (inDeck || inQueue) {
+    const where = inDeck ? '詞庫' : '這批佇列';
+    if (!confirm(`「${word}」已經在${where}中了，仍要加入處理嗎？`)) {
+      $('#batchWord').focus();
+      return;
+    }
+  }
+
   batchItems.push({ id: uid(), word, raw, status: 'pending', error: '', data: null });
   $('#batchWord').value = '';
   $('#batchRaw').value = '';
