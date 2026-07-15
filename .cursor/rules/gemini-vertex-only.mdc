@@ -1,0 +1,15 @@
+---
+description: 呼叫 Gemini API 時的通道規範
+alwaysApply: true
+---
+
+# Gemini API 通道規範
+
+凡是需要呼叫 Gemini API 時：
+
+- **務必使用 Vertex AI 通道**：`aiplatform.googleapis.com`
+  - Express 端點格式：`https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:generateContent?key={API_KEY}`
+- **嚴禁使用 Gemini 通道**：`generativelanguage.googleapis.com`
+  - 原因：該通道無法使用 GCP 抵免額。
+
+任何新增或修改的程式碼、文件、範例都必須遵守此規範，不得引入 `generativelanguage.googleapis.com`。

@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>快速背單字</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">單</span>
+      <h1>快速背單字</h1>
+    </div>
+    <nav class="nav">
+      <button class="nav-btn active" data-view="deck">詞庫</button>
+      <button class="nav-btn" data-view="add">新增單字</button>
+      <button class="nav-btn" data-view="batch">批次</button>
+      <button class="nav-btn" data-view="study">背誦</button>
+      <button class="nav-btn" data-view="settings">設定</button>
+    </nav>
+    <span id="cloudStatus" class="cloud-status" title="雲端同步狀態"></span>
+    <button id="themeToggle" class="theme-toggle" title="切換深色 / 白色主題">
+      <span class="theme-icon">🌙</span>
+    </button>
+  </header>
+
+  <main class="container">
+
+    <!-- ===================== 詞庫 ===================== -->
+    <section id="view-deck" class="view active">
+      <div class="deck-header">
+        <div class="stat-cards">
+          <div class="stat-card">
+            <span class="stat-num" id="statTotal">0</span>
+            <span class="stat-label">總單字</span>
+          </div>
+          <div class="stat-card accent">
+            <span class="stat-num" id="statDue">0</span>
+            <span class="stat-label">今日待複習</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-num" id="statNew">0</span>
+            <span class="stat-label">尚未學習</span>
+          </div>
+        </div>
+        <div class="deck-actions">
+          <input type="search" id="deckSearch" placeholder="搜尋單字…" />
+          <button class="btn primary" data-view="study" id="quickStudyBtn">開始背誦 →</button>
+        </div>
+      </div>
+      <div id="deckList" class="deck-list"></div>
+      <div id="deckEmpty" class="empty-state">
+        <p class="empty-title">詞庫是空的</p>
+        <p class="empty-sub">切到「新增單字」貼上歐路詞典內容，讓 Gemini 幫你整理。</p>
+        <button class="btn primary" data-view="add">＋ 新增第一個單字</button>
+      </div>
+    </section>
+
+    <!-- ===================== 新增單字 ===================== -->
+    <section id="view-add" class="view">
+      <div class="add-grid">
+        <div class="add-input-col">
+          <h2>新增單字</h2>
+          <label class="field">
+            <span class="field-label">單字 <em>*</em></span>
+            <input type="text" id="wordInput" placeholder="例如：concur" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">貼上歐路詞典搜尋結果（可整段貼上，越完整越好）</span>
+            <textarea id="rawInput" rows="14" placeholder="把歐路詞典（英漢、劍橋英英、有道、柯林斯、例句…）整段複製貼到這裡。也可以只貼單字讓 AI 自行整理。"></textarea>
+          </label>
+          <div class="add-btns">
+            <button class="btn primary" id="generateBtn">🤖 用 Gemini 整理</button>
+            <button class="btn ghost" id="clearAddBtn">清空</button>
+          </div>
+          <p class="hint" id="addHint">整理後會顯示預覽，確認無誤再存入詞庫。</p>
+          <div id="genStatus" class="gen-status" hidden></div>
+        </div>
+
+        <div class="add-preview-col">
+          <div class="preview-head">
+            <h2>整理預覽</h2>
+            <button class="btn primary" id="saveCardBtn" hidden>＋ 存入詞庫</button>
+          </div>
+          <div id="previewArea" class="preview-area">
+            <div class="empty-state small">
+              <p class="empty-sub">整理結果會顯示在這裡</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== 批次新增 ===================== -->
+    <section id="view-batch" class="view">
+      <h2>批次新增（背景多線程整理）</h2>
+      <p class="hint">一邊輸入下一個單字，系統一邊在背景用多組金鑰同時整理。整理完成會自動存入詞庫。</p>
+      <div class="add-grid">
+        <div class="add-input-col">
+          <label class="field">
+            <span class="field-label">單字 <em>*</em></span>
+            <input type="text" id="batchWord" placeholder="例如：concur" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span class="field-label">貼上歐路詞典內容（可留空讓 AI 自行整理）</span>
+            <textarea id="batchRaw" rows="12" placeholder="貼上歐路詞典內容，按 Ctrl+Enter 快速加入佇列"></textarea>
+          </label>
+          <div class="add-btns">
+            <button class="btn primary" id="batchAddBtn">＋ 加入佇列並開始整理</button>
+            <button class="btn ghost" id="batchClearDone">清除已完成</button>
+          </div>
+          <p class="hint" id="batchHint"></p>
+        </div>
+        <div class="add-preview-col">
+          <div class="preview-head">
+            <h2>佇列 <span id="batchCount" class="badge">0</span></h2>
+            <span id="batchProgress" class="hint"></span>
+          </div>
+          <div id="batchList" class="batch-list">
+            <div class="empty-state small"><p class="empty-sub">加入的單字會顯示在這裡，並即時顯示整理狀態</p></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== 背誦 ===================== -->
+    <section id="view-study" class="view">
+      <!-- 設定背誦範圍 -->
+      <div id="studySetup" class="study-setup">
+        <h2>選擇背誦模式</h2>
+        <p class="hint">可以複選，系統會依「間隔重複（SRS）」自動安排到期的卡片。</p>
+        <div class="mode-grid" id="modeGrid"></div>
+        <div class="study-scope">
+          <label class="radio">
+            <input type="radio" name="scope" value="due" checked /> 只複習到期的卡片
+          </label>
+          <label class="radio">
+            <input type="radio" name="scope" value="all" /> 全部卡片（含未到期）
+          </label>
+        </div>
+        <button class="btn primary big" id="startStudyBtn">開始背誦</button>
+        <p id="studySetupHint" class="hint"></p>
+      </div>
+
+      <!-- 卡片區 -->
+      <div id="studyCard" class="study-card-wrap" hidden>
+        <div class="study-progress">
+          <span id="studyCounter">0 / 0</span>
+          <span id="studyModeBadge" class="badge"></span>
+          <button class="btn ghost small" id="endStudyBtn">結束</button>
+        </div>
+        <div class="flashcard" id="flashcard">
+          <div class="card-face card-front" id="cardFront"></div>
+          <div class="card-back" id="cardBack" hidden></div>
+        </div>
+        <div class="study-controls">
+          <button class="btn show-answer" id="showAnswerBtn">顯示答案（空白鍵）</button>
+          <div class="rate-btns" id="rateBtns" hidden>
+            <button class="btn rate again" data-rate="0">重來<small id="rt0"></small></button>
+            <button class="btn rate hard" data-rate="1">困難<small id="rt1"></small></button>
+            <button class="btn rate good" data-rate="2">良好<small id="rt2"></small></button>
+            <button class="btn rate easy" data-rate="3">簡單<small id="rt3"></small></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 完成 -->
+      <div id="studyDone" class="study-done" hidden>
+        <p class="done-emoji">🎉</p>
+        <h2>本輪完成！</h2>
+        <p id="doneSummary" class="hint"></p>
+        <button class="btn primary" id="backToSetupBtn">回到背誦選單</button>
+      </div>
+    </section>
+
+    <!-- ===================== 設定 ===================== -->
+    <section id="view-settings" class="view">
+      <h2>設定</h2>
+      <label class="field">
+        <span class="field-label">API 金鑰（每行一組，會自動輪詢）</span>
+        <textarea id="apiKeysInput" rows="4" placeholder="每行貼一組金鑰，多組會輪流使用，某組額度用完會自動換下一組" autocomplete="off" spellcheck="false"></textarea>
+        <span class="field-help">金鑰只存在你自己的瀏覽器（localStorage），不會上傳到任何伺服器。一律使用 <b>Vertex AI 通道</b>（<code>aiplatform.googleapis.com</code>），請填入 <code>AQ.</code> 開頭的 Vertex AI Express 金鑰。</span>
+      </label>
+      <label class="field">
+        <span class="field-label">模型</span>
+        <select id="modelSelect">
+          <option value="gemini-3-flash-preview">gemini-3-flash-preview（Vertex，推薦）</option>
+          <option value="gemini-2.5-flash">gemini-2.5-flash（快又便宜）</option>
+          <option value="gemini-2.5-pro">gemini-2.5-pro（更準，較慢）</option>
+          <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
+          <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+        </select>
+      </label>
+      <div class="settings-row">
+        <button class="btn primary" id="saveSettingsBtn">儲存設定</button>
+        <button class="btn ghost" id="testKeyBtn">測試連線</button>
+        <span id="settingsStatus" class="hint"></span>
+      </div>
+
+      <hr class="divider" />
+
+      <h3>資料管理</h3>
+      <p class="hint">所有單字資料都存在這台瀏覽器。建議定期匯出備份。</p>
+      <div class="settings-row">
+        <button class="btn ghost" id="exportBtn">匯出資料（JSON）</button>
+        <label class="btn ghost file-btn">
+          匯入資料
+          <input type="file" id="importFile" accept="application/json" hidden />
+        </label>
+        <button class="btn danger" id="resetBtn">清空所有資料</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <!-- 本機私密設定（部署後不存在，會被忽略） -->
+  <script src="config.local.js" onerror="this.remove()"></script>
+  <!-- Firebase / Firestore 雲端同步 -->
+  <script type="module" src="db.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

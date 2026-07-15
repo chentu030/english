@@ -1,0 +1,14 @@
+# 私密設定與金鑰（絕對不要上傳）
+config.local.js
+gemini api.txt
+
+# 個人筆記（不需上傳，如要備份可自行移除）
+gemini幫忙想記憶方法.txt
+歐路詞典複製的內容長相.txt
+
+# 系統/編輯器
+.DS_Store
+Thumbs.db
+.vscode/
+node_modules/
+.vercel/
