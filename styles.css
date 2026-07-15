@@ -203,6 +203,16 @@ h3 { font-size: 17px; margin-bottom: 8px; }
 .study-options { display: flex; gap: 20px; flex-wrap: wrap; margin: 6px 0 4px; font-size: 14px; color: var(--text-soft); }
 .study-options label { display: flex; align-items: center; gap: 6px; }
 
+/* 卡片上的星號 */
+.wc-star {
+  border: none; background: transparent; cursor: pointer;
+  font-size: 20px; line-height: 1; padding: 0 6px 0 0; color: var(--text-mute);
+  vertical-align: baseline; transition: transform .1s, color .15s;
+}
+.wc-star:hover { transform: scale(1.15); color: var(--accent); }
+.wc-star.on { color: #f5b301; }
+#starFilterBtn.active { background: #f5b301; color: #fff; border-color: #f5b301; }
+
 /* 卡片上的助記下拉 */
 .wc-mnem { margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); overflow: hidden; }
 .wc-mnem > summary {

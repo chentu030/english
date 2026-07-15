@@ -63,6 +63,7 @@ let folders = [];      // 自訂資料夾名稱
 let daily = null;      // { date, count, streak, lastMetDate }
 let deckFolder = '';   // 詞庫篩選：'' 全部、NO_FOLDER 未分類、否則資料夾名
 let deckSort = 'created_desc';
+let starOnly = false;  // 詞庫是否只顯示加星號的單字
 let selectMode = false;          // 詞庫批次選取模式
 let lastFilteredIds = [];        // 目前畫面上顯示的卡片 id（供全選使用）
 const selectedIds = new Set();   // 已勾選的卡片 id
@@ -1136,6 +1137,19 @@ function bindDeck() {
   $('#deckSearch').addEventListener('input', renderDeck);
   $('#deckList').addEventListener('click', e => {
     if (e.target.closest('.speak-btn')) return; // 喇叭交給全域處理，不開詳情
+    const star = e.target.closest('.wc-star');
+    if (star) {
+      e.stopPropagation();
+      const c = cards.find(x => x.id === star.closest('.word-card').dataset.id);
+      if (c) {
+        c.starred = !c.starred;
+        saveCards();
+        cloudUpsert(c);
+        renderDeck();
+        toast(c.starred ? '已加星號' : '已移除星號');
+      }
+      return;
+    }
     if (selectMode) {
       if (e.target.closest('.wc-mnem')) return; // 選取模式下讓助記下拉正常展開
       const card = e.target.closest('.word-card');
@@ -1235,6 +1249,12 @@ function bindDeckControls() {
   $('#newFolderBtn').addEventListener('click', () => {
     const name = createFolder();
     if (name) { deckFolder = name; renderFolderSelects(); renderDeck(); }
+  });
+  // 只看星號
+  $('#starFilterBtn').addEventListener('click', () => {
+    starOnly = !starOnly;
+    $('#starFilterBtn').classList.toggle('active', starOnly);
+    renderDeck();
   });
   // 批次選取
   $('#selectModeBtn').addEventListener('click', () => setSelectMode(!selectMode));
@@ -1384,6 +1404,8 @@ function renderDeck() {
   $('#statNew').textContent = newTotal;
 
   let filtered = cards.filter(c => {
+    // 只看星號
+    if (starOnly && !c.starred) return false;
     // 資料夾篩選
     if (deckFolder === NO_FOLDER) { if (c.folder) return false; }
     else if (deckFolder) { if (c.folder !== deckFolder) return false; }
@@ -1429,7 +1451,7 @@ function renderDeck() {
         ${selectMode
         ? `<input type="checkbox" class="wc-check" ${checked ? 'checked' : ''} tabindex="-1" />`
         : `<button class="wc-del" title="刪除">✕</button>`}
-        <div class="wc-word">${esc(d.word)}${spkWord3(d.word)}</div>
+        <div class="wc-word"><button class="wc-star${c.starred ? ' on' : ''}" title="${c.starred ? '移除星號' : '加星號'}">${c.starred ? '★' : '☆'}</button>${esc(d.word)}${spkWord3(d.word)}</div>
         ${phon ? `<div class="wc-phon">${esc(phon)}</div>` : ''}
         <div class="wc-mean">${esc(mean || '（無釋義）')}</div>
         ${tags.length ? `<div class="wc-tags">${tags.join('')}</div>` : ''}
