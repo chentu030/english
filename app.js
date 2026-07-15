@@ -1391,14 +1391,24 @@ function heatLevel(n) {
 }
 function renderHeatmap() {
   const hist = loadJSON(LS_DAILY_HIST, {});
-  const weeks = 15;
+  const weeks = 53; // 約一年（GitHub 風格）
+  const WD = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
   const today = new Date(); today.setHours(0, 0, 0, 0);
   // 對齊到本週週日；讓今天落在最後一欄
   const start = new Date(today);
   start.setDate(today.getDate() - today.getDay() - (weeks - 1) * 7);
+
   let total = 0;
   let cols = '';
+  let months = '';
+  let prevMonth = -1;
   for (let w = 0; w < weeks; w++) {
+    // 這一欄（週）第一天，決定是否標月份
+    const firstDay = new Date(start); firstDay.setDate(start.getDate() + w * 7);
+    const mo = firstDay.getMonth();
+    months += `<span class="heat-mo">${mo !== prevMonth ? (mo + 1) + '月' : ''}</span>`;
+    prevMonth = mo;
+
     let cells = '';
     for (let d = 0; d < 7; d++) {
       const cur = new Date(start);
@@ -1408,13 +1418,25 @@ function renderHeatmap() {
       const n = hist[key] || 0;
       if (!future) total += n;
       const lvl = future ? 'f' : heatLevel(n);
-      cells += `<span class="heat-cell l${lvl}" title="${key}｜${future ? '—' : n + ' 張'}"></span>`;
+      const tip = `${key}（${WD[cur.getDay()]}）｜${future ? '—' : n + ' 張'}`;
+      cells += `<span class="heat-cell l${lvl}" title="${tip}"></span>`;
     }
     cols += `<div class="heat-col">${cells}</div>`;
   }
+
+  // 左側星期標籤（僅一、三、五，對齊 GitHub）
+  const wdLabels = [0, 1, 2, 3, 4, 5, 6]
+    .map(i => `<span class="heat-wd">${[1, 3, 5].includes(i) ? WD[i].slice(1) : ''}</span>`).join('');
+
   return `<div class="dp-heat">
-      <div class="heat-title">最近複習（越深＝翻越多張）</div>
-      <div class="heat-grid">${cols}</div>
+      <div class="heat-title">最近一年複習（越深＝當天翻越多張，共 ${total} 張）</div>
+      <div class="heat-cal">
+        <div class="heat-weekdays"><span class="heat-wd-spacer"></span>${wdLabels}</div>
+        <div class="heat-gridwrap">
+          <div class="heat-months">${months}</div>
+          <div class="heat-grid">${cols}</div>
+        </div>
+      </div>
     </div>`;
 }
 

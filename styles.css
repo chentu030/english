@@ -192,9 +192,17 @@ h3 { font-size: 17px; margin-bottom: 8px; }
   box-shadow: var(--shadow); padding: 16px 20px; margin-bottom: 18px;
   display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
 }
-.daily-panel .dp-heat { flex: 0 0 auto; }
-.dp-heat .heat-title { font-size: 11px; color: var(--text-mute); margin-bottom: 6px; }
-.dp-heat .heat-grid { display: flex; gap: 3px; }
+.daily-panel .dp-heat { flex: 1 1 100%; min-width: 0; }
+.dp-heat .heat-title { font-size: 12px; color: var(--text-mute); margin-bottom: 8px; }
+/* GitHub 風格月曆：左側星期（固定）＋ 可橫向捲動的月份+格子 */
+.dp-heat .heat-cal { display: flex; gap: 4px; align-items: flex-start; }
+.dp-heat .heat-weekdays { display: flex; flex-direction: column; gap: 3px; flex: 0 0 auto; }
+.dp-heat .heat-wd-spacer { height: 16px; display: block; }
+.dp-heat .heat-wd { height: 11px; line-height: 11px; font-size: 9px; color: var(--text-mute); text-align: right; }
+.dp-heat .heat-gridwrap { overflow-x: auto; overflow-y: hidden; }
+.dp-heat .heat-months { display: flex; height: 14px; margin-bottom: 2px; width: max-content; }
+.dp-heat .heat-mo { display: inline-block; width: 14px; font-size: 10px; color: var(--text-mute); white-space: nowrap; }
+.dp-heat .heat-grid { display: flex; gap: 3px; width: max-content; }
 .dp-heat .heat-col { display: flex; flex-direction: column; gap: 3px; }
 .dp-heat .heat-cell { width: 11px; height: 11px; border-radius: 2px; background: var(--bg-soft); }
 .dp-heat .heat-cell.l0 { background: var(--bg-soft); }
@@ -203,7 +211,7 @@ h3 { font-size: 17px; margin-bottom: 8px; }
 .dp-heat .heat-cell.l3 { background: #30a14e; }
 .dp-heat .heat-cell.l4 { background: #216e39; }
 .dp-heat .heat-cell.lf { background: transparent; }
-.daily-panel .dp-main { flex: 1; min-width: 220px; }
+.daily-panel .dp-main { flex: 1 1 260px; min-width: 220px; }
 .daily-panel .dp-title { font-size: 14px; font-weight: 700; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
 .daily-panel .dp-title .dp-check { color: var(--good); }
 .daily-bar { height: 10px; background: var(--bg-soft); border-radius: 20px; overflow: hidden; }
