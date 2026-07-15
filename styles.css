@@ -617,6 +617,7 @@ input:focus, textarea:focus, select:focus {
 
 /* ===================== 單字卡彈出視窗 ===================== */
 body.modal-open { overflow: hidden; }
+.modal[hidden] { display: none; }
 .modal { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .modal-overlay { position: absolute; inset: 0; background: rgba(0, 0, 0, .5); backdrop-filter: blur(2px); }
 .modal-box {
