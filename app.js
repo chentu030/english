@@ -44,7 +44,7 @@ const BUILTIN_LANGS = {
   es: makeLang('es', '西', '西班牙文', 'es-ES', 'es'),
   nl: makeLang('nl', '荷', '荷蘭文', 'nl-NL', 'nl'),
   ru: makeLang('ru', '俄', '俄文', 'ru-RU', 'ru'),
-  vi: makeLang('vi', '越', '越南文', 'vi-VN', 'vi'),
+  // 越南文（vi）暫時隱藏
 };
 // 英文標題單字保留美式/英式之分
 BUILTIN_LANGS.en.speech = { us: 'en-US', uk: 'en-GB', def: 'en-US' };
@@ -194,6 +194,7 @@ function bumpHistory() {
   const k = todayStr();
   hist[k] = (hist[k] || 0) + 1;
   localStorage.setItem(nsKey(LS_DAILY_HIST), JSON.stringify(hist));
+  saveHistoryToCloud();
 }
 
 function esc(s) {
@@ -351,6 +352,63 @@ function spk(text) {
   return `<button class="speak-btn" data-speak="${t}" data-src="browser" title="瀏覽器語音" type="button">🔊</button>`
     + `<button class="speak-btn" data-speak="${t}" data-src="ai" title="AI 語音" type="button">🤖</button>`;
 }
+// 中文：瀏覽器中文語音 + AI
+function spkZh(text) {
+  if (!text) return '';
+  const t = esc(text);
+  return `<button class="speak-btn" data-speak="${t}" data-src="zh" title="中文發音（瀏覽器）" type="button">🔊中</button>`
+    + `<button class="speak-btn" data-speak="${t}" data-src="ai" title="中文 AI 語音" type="button">🤖</button>`;
+}
+
+// 依序朗讀多段（瀏覽器語音會自動排隊）
+function makeUtterance(text, lang) {
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = lang;
+  u.rate = 0.95;
+  const voices = window.speechSynthesis.getVoices();
+  const pre = lang.slice(0, 2).toLowerCase();
+  const same = voices.filter(x => x.lang && x.lang.toLowerCase().startsWith(pre));
+  const best = same.find(x => x.lang.toLowerCase() === lang.toLowerCase() && /google|microsoft|natural/i.test(x.name))
+    || same.find(x => x.lang.toLowerCase() === lang.toLowerCase())
+    || same[0];
+  if (best) u.voice = best;
+  return u;
+}
+function speakSequence(items) {
+  if (!window.speechSynthesis) return;
+  try {
+    window.speechSynthesis.cancel();
+    items.filter(it => it && it.text && String(it.text).trim())
+      .forEach(it => window.speechSynthesis.speak(makeUtterance(String(it.text), it.lang || L().speech.def)));
+  } catch (e) { console.error(e); }
+}
+const ZH_LANG = 'zh-TW';
+function zhExplanationOf(d) {
+  return (d.definitions || []).map(x => (x.meaning_zh || '').trim()).filter(Boolean).join('，');
+}
+function exampleSentencesOf(d) {
+  const arr = [];
+  (d.definitions || []).forEach(x => { if (x.example_en) arr.push(x.example_en); });
+  (d.examples || []).forEach(x => { if (x.en) arr.push(x.en); });
+  return arr;
+}
+const TARGET_LANG = () => L().speech.def;
+// 切到新卡：自動念單字＋中文解釋（克漏字則念整句）
+function autoSpeakFront(d, mode) {
+  if (mode === 'spelling') {
+    const sent = clozeSentence(d);
+    speakSequence([{ text: sent ? sent.en : d.word, lang: TARGET_LANG() },
+      { text: sent ? sent.zh : '', lang: ZH_LANG }]);
+    return;
+  }
+  speakSequence([{ text: d.word, lang: TARGET_LANG() }, { text: zhExplanationOf(d), lang: ZH_LANG }]);
+}
+// 顯示答案：念單字＋中文解釋＋所有例句
+function autoSpeakBack(d) {
+  const items = [{ text: d.word, lang: TARGET_LANG() }, { text: zhExplanationOf(d), lang: ZH_LANG }];
+  exampleSentencesOf(d).forEach(s => items.push({ text: s, lang: TARGET_LANG() }));
+  speakSequence(items);
+}
 
 let toastTimer;
 function toast(msg, isErr = false) {
@@ -391,6 +449,7 @@ function init() {
       case 'uk': speakWordAccent(t, 'uk'); break;
       case 'ai': speakGeminiTTS(t); break;
       case 'dict': speakWord(t); break;
+      case 'zh': speak(t, ZH_LANG); break;
       default: speak(t);
     }
   });
@@ -495,6 +554,7 @@ async function onAuthChanged(u) {
   renderDeck();
   renderModeGrid();
   if (window.Cloud && window.Cloud.enabled) startCloud();
+  syncHistory();
   showGate(false);
 }
 
@@ -524,16 +584,58 @@ async function migrateLegacyToUser(uid) {
       window.Cloud.setCollection(col);
       try { await window.Cloud.bulk(legacyCards); } catch (e) { console.error(e); }
     }
-    // 3) 資料夾／每日進度：把舊 key 複製到帶 uid 的新 key（若尚未存在）
-    const fBase = l.code === 'en' ? LS_FOLDERS : `${LS_FOLDERS}_${l.code}`;
-    const dBase = l.code === 'en' ? LS_DAILY : `${LS_DAILY}_${l.code}`;
-    const fNew = `${fBase}__u_${uid}`;
-    const dNew = `${dBase}__u_${uid}`;
-    if (localStorage.getItem(fBase) && !localStorage.getItem(fNew)) localStorage.setItem(fNew, localStorage.getItem(fBase));
-    if (localStorage.getItem(dBase) && !localStorage.getItem(dNew)) localStorage.setItem(dNew, localStorage.getItem(dBase));
+    // 3) 資料夾／每日進度／複習歷史：把舊 key 複製到帶 uid 的新 key（若尚未存在）
+    const bases = [
+      l.code === 'en' ? LS_FOLDERS : `${LS_FOLDERS}_${l.code}`,
+      l.code === 'en' ? LS_DAILY : `${LS_DAILY}_${l.code}`,
+      l.code === 'en' ? LS_DAILY_HIST : `${LS_DAILY_HIST}_${l.code}`,
+    ];
+    bases.forEach(b => {
+      const nk = `${b}__u_${uid}`;
+      if (localStorage.getItem(b) && !localStorage.getItem(nk)) localStorage.setItem(nk, localStorage.getItem(b));
+    });
   }
   // 還原目前語言集合
   if (window.Cloud?.setCollection) window.Cloud.setCollection(L().collection);
+}
+
+/* ---------------------- 複習歷史（熱力圖）跨裝置同步 ---------------------- */
+let histSaveTimer = null;
+function histMetaName() { return `hist_${currentLang}`; }
+function saveHistoryToCloud() {
+  if (!currentUid || !(window.Cloud && window.Cloud.enabled && window.Cloud.saveMeta)) return;
+  clearTimeout(histSaveTimer);
+  histSaveTimer = setTimeout(() => {
+    const hist = loadJSON(nsKey(LS_DAILY_HIST), {});
+    window.Cloud.saveMeta(histMetaName(), { history: hist });
+  }, 1500);
+}
+// 登入時：回收登入前的本機歷史 + 與雲端合併（取每日較大值），修正「隔天消失」
+async function syncHistory() {
+  if (!currentUid) { renderDailyPanel(); return; }
+  const curKey = nsKey(LS_DAILY_HIST);
+  let cur = loadJSON(curKey, {});
+  // (1) 回收登入前存在「非 uid」key 的歷史（每個 uid／語言只做一次）
+  const legacyBase = currentLang === 'en' ? LS_DAILY_HIST : `${LS_DAILY_HIST}_${currentLang}`;
+  const recoverFlag = `vocab_hist_recovered_${currentLang}_${currentUid}`;
+  if (!localStorage.getItem(recoverFlag)) {
+    const legacy = loadJSON(legacyBase, {});
+    if (legacy && typeof legacy === 'object') {
+      Object.keys(legacy).forEach(k => { cur[k] = Math.max(cur[k] || 0, legacy[k] || 0); });
+    }
+    localStorage.setItem(recoverFlag, '1');
+  }
+  // (2) 與雲端合併
+  if (window.Cloud && window.Cloud.enabled && window.Cloud.loadMeta) {
+    try {
+      const meta = await window.Cloud.loadMeta(histMetaName());
+      const cloudHist = (meta && meta.history) || {};
+      Object.keys(cloudHist).forEach(k => { cur[k] = Math.max(cur[k] || 0, cloudHist[k] || 0); });
+    } catch (e) { console.error(e); }
+  }
+  localStorage.setItem(curKey, JSON.stringify(cur));
+  saveHistoryToCloud(); // 把合併後結果寫回雲端，跨裝置一致
+  renderDailyPanel();
 }
 
 /* ---------------------- 雲端同步 ---------------------- */
@@ -728,6 +830,7 @@ function switchLang(lang) {
   renderModeGrid();
   // 重新訂閱該語言的雲端集合
   startCloud();
+  syncHistory();
   toast(`已切換到${L().label}`);
 }
 
@@ -1021,8 +1124,9 @@ async function regenerateSegment(segKey, btn) {
   const seg = SEGMENTS.find(s => s.key === segKey);
   if (!seg) return;
   const { data, container, word } = currentEntry;
-  // 用最新的原文（若使用者剛編輯過）
-  const raw = $('#rawInput').value.trim();
+  // 用最新的原文（新增頁讀 #rawInput；背誦/彈窗編輯則沿用該卡原文）
+  const onAddPage = container && container.id === 'previewArea';
+  const raw = onAddPage ? $('#rawInput').value.trim() : (currentEntry.raw || '');
   currentEntry.raw = raw;
   if (currentEntry.card) { currentEntry.card.raw = raw; saveCards(); }
 
@@ -1143,7 +1247,14 @@ function addBatchItem() {
     }
   }
 
-  batchItems.push({ id: uid(), word, raw, status: 'pending', error: '', data: null });
+  const bf = $('#batchFolder');
+  let folder = bf ? bf.value : '';
+  if (folder === '__new__') {
+    folder = createFolder();
+    if (bf) bf.value = folder || '';
+  }
+
+  batchItems.push({ id: uid(), word, raw, folder: folder || '', status: 'pending', error: '', data: null });
   $('#batchWord').value = '';
   $('#batchRaw').value = '';
   $('#batchWord').focus();
@@ -1177,8 +1288,10 @@ async function runBatchItem(it) {
     if (empty) throw new Error('回傳內容為空，請重試');
     it.data = data;
     const newCard = addCardFromData(data, it.raw);
+    if (it.folder) newCard.folder = it.folder;
     saveCards();
     cloudUpsert(newCard);
+    renderFolderSelects();
     it.status = 'done';
   } catch (err) {
     it.status = 'error';
@@ -1244,9 +1357,9 @@ function buildEntryHtml(d, editable) {
   const defs = (d.definitions || []).map(x => `
     <div class="def-item">
       ${x.pos ? `<span class="def-pos">${esc(x.pos)}</span>` : ''}
-      <span class="def-zh">${esc(x.meaning_zh)}</span>
+      <span class="def-zh">${esc(x.meaning_zh)}</span>${x.meaning_zh ? spkZh(x.meaning_zh) : ''}
       ${x.meaning_en ? `<span class="def-en"> — ${esc(x.meaning_en)}</span>` : ''}
-      ${x.example_en ? `<div class="example">${esc(x.example_en)}${spk(x.example_en)}<div class="ex-zh">${esc(x.example_zh || '')}</div></div>` : ''}
+      ${x.example_en ? `<div class="example">${esc(x.example_en)}${spk(x.example_en)}<div class="ex-zh">${esc(x.example_zh || '')}${x.example_zh ? spkZh(x.example_zh) : ''}</div></div>` : ''}
     </div>`).join('');
 
   const formsPills = (d.word_forms || []).length
@@ -1289,6 +1402,7 @@ function buildEntryHtml(d, editable) {
     <div class="entry-word">${esc(d.word)}${spkWord3(d.word)}</div>
     ${phon ? `<div class="entry-phon">${phon}</div>` : ''}
     ${sec('釋義', '📖', defs, 'base')}
+    ${notesHtml}
     ${sec('詞形變化', '🔤', formsPills, 'forms')}
     ${sec('詞性變換／派生詞', '🔀', derivPills, 'forms')}
     ${sec('助記法', '💡', mnem, 'memory')}
@@ -1300,7 +1414,6 @@ function buildEntryHtml(d, editable) {
     ${sec('情境詞（常一起出現）', '🎯', ctxPills, 'relation')}
     ${sec('形近／易混淆', '⚠️', confus, 'relation')}
     ${sec('例句庫', '✏️', examples, 'examples')}
-    ${notesHtml}
   `;
 }
 
@@ -1528,6 +1641,15 @@ function renderFolderSelects() {
       + `<option value="__new__">＋ 新資料夾…</option>`;
     mf.value = '';
   }
+  // 批次新增：目標資料夾
+  const bf = $('#batchFolder');
+  if (bf) {
+    const prev = bf.value;
+    bf.innerHTML = `<option value="">未分類</option>`
+      + list.map(f => `<option value="${esc(f)}">${esc(f)}</option>`).join('')
+      + `<option value="__new__">＋ 新資料夾…</option>`;
+    bf.value = list.includes(prev) ? prev : '';
+  }
 }
 
 // 產生卡片上的資料夾下拉
@@ -1548,6 +1670,28 @@ function createFolder() {
   return name;
 }
 
+// 重新命名目前在詞庫選取的資料夾
+function renameCurrentFolder() {
+  const old = deckFolder;
+  if (!old || old === NO_FOLDER) { toast('請先在上方選一個要改名的資料夾', true); return; }
+  const name = (prompt(`把「${old}」改名為：`, old) || '').trim();
+  if (!name || name === old) return;
+  if (name === NO_FOLDER || name === '__new__') { toast('名稱不可使用', true); return; }
+  // 更新資料夾清單（合併到既有同名）
+  folders = folders.filter(f => f !== old);
+  if (!folders.includes(name)) folders.push(name);
+  saveFolders();
+  // 更新所有卡片
+  cards.forEach(c => {
+    if (c.folder === old) { c.folder = name; cloudUpsert(c); }
+  });
+  saveCards();
+  deckFolder = name;
+  renderFolderSelects();
+  renderDeck();
+  toast(`已改名為「${name}」`);
+}
+
 function bindDeckControls() {
   $('#deckFolder').addEventListener('change', e => { deckFolder = e.target.value; renderDeck(); });
   $('#deckSort').addEventListener('change', e => { deckSort = e.target.value; renderDeck(); });
@@ -1555,6 +1699,7 @@ function bindDeckControls() {
     const name = createFolder();
     if (name) { deckFolder = name; renderFolderSelects(); renderDeck(); }
   });
+  $('#renameFolderBtn').addEventListener('click', renameCurrentFolder);
   // 只看星號
   $('#starFilterBtn').addEventListener('click', () => {
     starOnly = !starOnly;
@@ -1827,11 +1972,17 @@ function renderDeck() {
 
 // 點詞庫單字：彈出視窗看整張卡片重點（唯讀）
 let modalCardId = null;
+function setModalReadonly(c) {
+  $('#modalBody').innerHTML = buildEntryHtml(c.data, false);
+  const btn = $('#modalEditBtn');
+  btn.textContent = '✏️ 編輯';
+  btn.dataset.editing = '';
+}
 function openCardDetail(id) {
   const c = cards.find(x => x.id === id);
   if (!c) return;
   modalCardId = id;
-  $('#modalBody').innerHTML = buildEntryHtml(c.data, false);
+  setModalReadonly(c);
   const modal = $('#cardModal');
   modal.hidden = false;
   document.body.classList.add('modal-open');
@@ -1841,15 +1992,35 @@ function closeCardModal() {
   $('#cardModal').hidden = true;
   document.body.classList.remove('modal-open');
   modalCardId = null;
+  currentEntry = null;
+  renderDeck(); // 反映剛剛在彈窗內的編輯
 }
 function bindCardModal() {
   $('#modalCloseBtn').addEventListener('click', closeCardModal);
   $('#cardModal').querySelectorAll('[data-close-modal]').forEach(el =>
     el.addEventListener('click', closeCardModal));
+  // 直接在彈窗內編輯（不跳到新增頁）
   $('#modalEditBtn').addEventListener('click', () => {
-    const id = modalCardId;
-    closeCardModal();
-    if (id) editCardFull(id);
+    const c = cards.find(x => x.id === modalCardId);
+    if (!c) return;
+    const btn = $('#modalEditBtn');
+    if (btn.dataset.editing === '1') {
+      setModalReadonly(c);
+      renderDeck();
+    } else {
+      renderPreview(c.data, $('#modalBody'), {
+        editable: true, word: c.data.word, raw: c.raw || '',
+        onChange: () => saveCards(), card: c,
+      });
+      btn.textContent = '✓ 完成'; btn.dataset.editing = '1';
+      $('#modalBody').scrollTop = 0;
+    }
+  });
+  // 彈窗內：各段重新生成／手動編輯整張卡
+  $('#modalBody').addEventListener('click', e => {
+    const regen = e.target.closest('.seg-regen');
+    if (regen) { regenerateSegment(regen.dataset.seg, regen); return; }
+    if (e.target.closest('[data-edit-card]')) openCardEditor();
   });
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && !$('#cardModal').hidden) closeCardModal();
@@ -2035,8 +2206,9 @@ function showCurrentCard() {
         if (e.key === 'Enter') { e.preventDefault(); if (!$('#showAnswerBtn').hidden) revealAnswer(); }
       });
     }
-    speakWord(card.data.word); // 自動播放一次發音（若被瀏覽器擋下，可按「播放」）
   }
+  // 切到新卡自動朗讀：單字＋中文解釋（克漏字念整句），皆用瀏覽器語音
+  autoSpeakFront(card.data, item.mode);
 }
 
 function escapeReg(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
@@ -2099,7 +2271,7 @@ function renderFaces(d, mode) {
       clozeHtml = `<div class="spell-cloze">${esc(sent.en).replace(re, '<span class="blank">＿＿＿＿</span>')}</div>`
         + (sent.zh ? `<div class="spell-hint-zh">${esc(sent.zh)}</div>` : '');
     }
-    front = `<div class="spell-top">🔊 聽發音，拼出單字 <button class="speak-btn" data-speak="${esc(d.word)}" data-src="dict" type="button" title="再聽一次">🔁 播放</button></div>`
+    front = `<div class="spell-top">🔊 聽整句，拼出單字 <button class="speak-btn" data-speak="${esc(sent ? sent.en : d.word)}" data-src="browser" type="button" title="再聽一次整句">🔁 播放</button></div>`
       + clozeHtml
       + `<input id="spellInput" class="spell-input" placeholder="在此輸入單字…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />`
       + (zhHint ? `<div class="fc-prompt">提示：${esc(zhHint)}</div>` : '')
@@ -2116,9 +2288,56 @@ function renderFaces(d, mode) {
     back = (forms ? `<div class="entry-section"><div class="es-title">🔤 詞形變化</div>${forms}</div>` : '')
       + (derivs ? `<div class="entry-section"><div class="es-title">🔀 詞性變換／派生詞</div>${derivs}</div>` : '');
   }
-  // 答案面一律顯示「完整字卡」，方便一次看到全部內容
-  back = buildEntryHtml(d, false);
+  // 答案面：先放「該模式專屬答案區」，再放完整字卡
+  back = modeAnswerBlock(d, mode) + buildEntryHtml(d, false);
   return { front, back };
+}
+
+// 克漏字遮罩：保留目標單字，其餘字用底線提示（長度近似）
+function clozeMask(phrase, keepWord) {
+  const kw = (keepWord || '').trim().toLowerCase();
+  return String(phrase || '').split(/\s+/).map(w => {
+    const bare = w.replace(/[^\p{L}\p{N}]/gu, '');
+    if (kw && bare.toLowerCase() === kw) return esc(w);
+    return `<span class="cloze-blank">${'＿'.repeat(Math.max(2, bare.length))}</span>`;
+  }).join(' ');
+}
+
+// 各背誦模式的「專屬答案區」（顯示在完整字卡最上方）
+function modeAnswerBlock(d, mode) {
+  const wrap = (title, inner) => inner
+    ? `<div class="mode-answer"><div class="ma-title">${title}</div>${inner}</div>` : '';
+  const clozeLines = (arr, key) => (arr || []).map(x =>
+    `<div class="ma-line">${clozeMask(x[key], d.word)}　<span class="ma-zh">${esc(x.meaning || '')}</span>${spk(x[key])}<span class="ma-ans">（答案：${esc(x[key])}）</span></div>`).join('');
+
+  if (mode === 'collocation') return wrap('🔗 搭配詞（克漏字，附中文提示）', clozeLines(d.collocations, 'phrase'));
+  if (mode === 'phrase') return wrap('🧩 片語（克漏字，附中文提示）', clozeLines(d.phrases, 'phrase'));
+
+  if (mode === 'context') {
+    const pills = (d.context_words || []).length
+      ? `<div class="pill-list">${d.context_words.map(x => `<span class="pill"><b>${esc(x.word)}</b>${spk(x.word)}<span class="pill-zh">${esc(x.meaning || '')}${x.note ? '｜' + esc(x.note) : ''}</span></span>`).join('')}</div>` : '';
+    const exs = exampleSentencesOf(d);
+    const exHtml = exs.length
+      ? `<div class="ma-sub">例句提示：</div>` + exs.map(s => `<div class="ma-line">${esc(s)}${spk(s)}</div>`).join('') : '';
+    return wrap('🎯 情境詞（例句作提示）', pills + exHtml);
+  }
+
+  if (mode === 'synonym') {
+    const syn = (d.synonyms || []).length
+      ? `<div class="pill-list">${d.synonyms.map(x => `<span class="pill"><b>${esc(x.word)}</b>${spk(x.word)}<span class="pill-zh">${esc(x.meaning || '')}</span></span>`).join('')}</div>` : '';
+    const ant = (d.antonyms || []).length
+      ? `<div class="ma-sub">反義詞：</div><div class="pill-list">${d.antonyms.map(x => `<span class="pill"><b>${esc(x.word)}</b>${spk(x.word)}<span class="pill-zh">${esc(x.meaning || '')}</span></span>`).join('')}</div>` : '';
+    return wrap('🟰 同義詞／反義詞', syn + ant);
+  }
+
+  if (mode === 'forms') {
+    const forms = (d.word_forms || []).map(x =>
+      `<div class="ma-line"><span class="ma-label">${esc(x.label)}</span><span class="cloze-blank">${'＿'.repeat(Math.max(2, (x.form || '').replace(/\s/g, '').length))}</span>${spkw(x.form)}<span class="ma-ans">（答案：${esc(x.form)}）</span></div>`).join('');
+    const derivs = (d.derivatives || []).map(x =>
+      `<div class="ma-line"><span class="ma-label">${esc(x.pos || '派生')}</span><span class="cloze-blank">${'＿'.repeat(Math.max(2, (x.word || '').replace(/\s/g, '').length))}</span>${spkw(x.word)}<span class="ma-ans">（答案：${esc(x.word)}｜${esc(x.meaning || '')}）</span></div>`).join('');
+    return wrap('🔤 詞形變化 / 詞性變換（先想想再看答案）', forms + derivs);
+  }
+  return '';
 }
 
 function mnemBlock(d) {
@@ -2153,10 +2372,13 @@ function toggleStudyEditor() {
   if (!card) return;
   $('#editCardBtn').textContent = '✓ 編輯完成';
   panel.hidden = false;
-  panel._onDone = () => toggleStudyEditor();
-  renderEditor(card.data, panel, () => {
-    saveCards();
-    debouncedCloudSave(card);
+  // 用可編輯的預覽（含各段「↻ 重新生成」與「手動編輯整張卡」）
+  renderPreview(card.data, panel, {
+    editable: true,
+    word: card.data.word,
+    raw: card.raw || '',
+    onChange: () => saveCards(),
+    card,
   });
   panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
@@ -2165,6 +2387,12 @@ function bindStudyControls() {
   $('#showAnswerBtn').addEventListener('click', revealAnswer);
   $('#endStudyBtn').addEventListener('click', endStudy);
   $('#editCardBtn').addEventListener('click', toggleStudyEditor);
+  // 背誦編輯面板：各段重新生成／手動編輯整張卡
+  $('#studyEditor').addEventListener('click', e => {
+    const regen = e.target.closest('.seg-regen');
+    if (regen) { regenerateSegment(regen.dataset.seg, regen); return; }
+    if (e.target.closest('[data-edit-card]')) openCardEditor();
+  });
   $('#rateBtns').addEventListener('click', e => {
     const b = e.target.closest('[data-rate]');
     if (b) rateCard(parseInt(b.dataset.rate, 10));
@@ -2197,6 +2425,9 @@ function revealAnswer() {
   $('#cardBack').hidden = false;
   $('#showAnswerBtn').hidden = true;
   $('#rateBtns').hidden = false;
+  // 顯示答案自動朗讀：單字＋中文解釋＋所有例句
+  const card = item ? cards.find(c => c.id === item.cardId) : null;
+  if (card) autoSpeakBack(card.data);
 }
 
 /* ---- SRS 排程（簡化 SM-2） ---- */

@@ -79,6 +79,7 @@
             <option value="alpha">字母 A→Z</option>
           </select>
           <button class="btn ghost" id="newFolderBtn">＋ 資料夾</button>
+          <button class="btn ghost" id="renameFolderBtn" title="重新命名目前選取的資料夾">✏️ 改名</button>
           <button class="btn ghost" id="starFilterBtn" title="只看星號單字">⭐ 星號</button>
           <button class="btn ghost" id="selectModeBtn">☑ 選取</button>
           <button class="btn primary" data-view="study" id="quickStudyBtn">開始背誦 →</button>
@@ -146,6 +147,10 @@
           <label class="field">
             <span class="field-label">貼上歐路詞典內容（可留空讓 AI 自行整理）</span>
             <textarea id="batchRaw" rows="12" placeholder="貼上歐路詞典內容，按 Ctrl+Enter 快速加入佇列"></textarea>
+          </label>
+          <label class="field">
+            <span class="field-label">加入到資料夾</span>
+            <select id="batchFolder" class="deck-select"></select>
           </label>
           <div class="add-btns">
             <button class="btn primary" id="batchAddBtn">＋ 加入佇列並開始整理</button>

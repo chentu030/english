@@ -5,7 +5,7 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.0/firebase-app.js';
 import {
   getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot,
-  writeBatch, getDocs,
+  writeBatch, getDocs, getDoc,
 } from 'https://www.gstatic.com/firebasejs/11.6.0/firebase-firestore.js';
 import {
   getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
@@ -116,6 +116,21 @@ window.Cloud = {
         await batch.commit();
       }
     } catch (e) { console.error('雲端清空失敗', e); }
+  },
+
+  // 讀取使用者的中繼資料文件（users/{uid}/meta/{name}）
+  async loadMeta(name) {
+    if (!db || !UID || !name) return null;
+    try {
+      const snap = await getDoc(doc(db, 'users', UID, 'meta', name));
+      return snap.exists() ? snap.data() : null;
+    } catch (e) { console.error('讀取 meta 失敗', name, e); return null; }
+  },
+  // 寫入使用者的中繼資料文件
+  async saveMeta(name, data) {
+    if (!db || !UID || !name) return;
+    try { await setDoc(doc(db, 'users', UID, 'meta', name), data); }
+    catch (e) { console.error('寫入 meta 失敗', name, e); }
   },
 
   // 一次性搬移：把舊的「共用」頂層集合 name 複製到 users/{uid}/name

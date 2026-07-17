@@ -20,6 +20,7 @@
   --shadow-lg: 0 12px 40px rgba(20, 30, 50, .14);
   --radius: 14px;
   --radius-sm: 9px;
+  --scrollbar: #2f6df6; /* 捲動軸滑桿顏色（跟隨主題） */
 }
 
 [data-theme="dark"] {
@@ -41,9 +42,17 @@
   --easy: #4aa3ec;
   --shadow: 0 1px 3px rgba(0, 0, 0, .4), 0 6px 20px rgba(0, 0, 0, .35);
   --shadow-lg: 0 12px 40px rgba(0, 0, 0, .5);
+  --scrollbar: #ffffff; /* 深色主題滑桿為白色 */
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ===================== 捲動軸（跟隨主題色） ===================== */
+* { scrollbar-color: var(--scrollbar) transparent; scrollbar-width: thin; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar); }
 
 body {
   font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -656,6 +665,30 @@ input:focus, textarea:focus, select:focus {
 .spell-result.ok { color: var(--good); background: rgba(41,163,106,.12); }
 .spell-result.no { color: var(--again); background: rgba(220,59,69,.1); }
 
+/* 各背誦模式的專屬答案區（顯示在完整字卡最上方） */
+.mode-answer {
+  border: 1.5px solid var(--primary);
+  background: var(--primary-soft);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+.ma-title { font-weight: 800; color: var(--primary); margin-bottom: 10px; font-size: 15px; }
+.ma-sub { font-weight: 700; color: var(--text-soft); margin: 10px 0 6px; font-size: 13px; }
+.ma-line {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  padding: 6px 0; border-bottom: 1px dashed var(--border);
+  font-size: 16px; line-height: 1.6;
+}
+.ma-line:last-child { border-bottom: none; }
+.ma-label {
+  display: inline-block; min-width: 84px; font-weight: 700; color: var(--primary);
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; font-size: 13px;
+}
+.cloze-blank { color: var(--primary); letter-spacing: 1px; font-weight: 700; }
+.ma-zh { color: var(--text-soft); }
+.ma-ans { color: var(--text-mute); font-size: 13px; }
+
 .study-done { text-align: center; padding: 60px 20px; }
 .done-emoji { font-size: 60px; }
 
@@ -714,16 +747,21 @@ body.modal-open { overflow: hidden; }
   .brand h1 { display: none; }
   .container { padding: 20px 14px 60px; }
 
-  /* 手機標題列：第一排放 Logo＋語言＋雲端＋主題，導覽列獨立一排可橫向捲動 */
-  .topbar { flex-wrap: wrap; gap: 10px 12px; padding: 10px 14px; }
+  /* 手機標題列：第一排放 Logo＋語言（可左右滑）＋登入＋主題，導覽列獨立一排可橫向捲動 */
+  .topbar { flex-wrap: wrap; gap: 10px 8px; padding: 10px 12px; }
   .nav {
     order: 3; flex: 1 1 100%; margin-left: 0; gap: 6px;
     overflow-x: auto; -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
   }
-  .nav::-webkit-scrollbar { display: none; }
   .nav-btn { padding: 7px 14px; font-size: 14px; flex: 0 0 auto; }
-  .lang-switch { margin-left: auto; }
-  .cloud-status { margin-left: 8px; }
-  .theme-toggle { width: 36px; height: 36px; margin-left: 8px; }
+  /* 語言列與 icon 並排，不換行，太多可左右滑動 */
+  .lang-switch {
+    flex: 1 1 0; min-width: 0; margin-left: 6px;
+    flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    padding-bottom: 3px;
+  }
+  .lang-switch .lang-btn { flex: 0 0 auto; }
+  .cloud-status { display: none; } /* 手機空間有限，隱藏同步文字 */
+  .login-btn { margin-left: 6px; padding: 6px 10px; }
+  .theme-toggle { width: 36px; height: 36px; margin-left: 6px; }
 }
