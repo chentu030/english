@@ -16,6 +16,7 @@ const LS_DAILY = 'vocab_daily_v1';
 const LS_DAILY_HIST = 'vocab_daily_hist_v1'; // { 'YYYY-MM-DD': 翻閱張數 }
 const LS_LANG = 'vocab_lang_v1';
 const LS_READER = 'vocab_reader_v1'; // 閱讀書架（每語言、每使用者分開）
+const LS_LISTEN = 'vocab_listen_v1'; // 聽力清單（每語言、每使用者分開）
 
 // 計入每日目標的模式（中英、克漏字為主）
 const DAILY_MODES = ['en2zh', 'zh2en', 'spelling'];
@@ -125,6 +126,7 @@ const DEFAULT_SETTINGS = {
   model: 'gemini-3-flash-preview',
   accent: 'us', // us | uk
   dailyGoal: 20,
+  listenBackend: 'http://127.0.0.1:8756', // 本機轉錄後端
 };
 
 let keyIndex = 0;          // 金鑰輪詢游標
@@ -468,12 +470,14 @@ function init() {
   bindStudyControls();
   bindSettings();
   bindReader();
+  bindListen();
 
   // 回填設定畫面
   $('#apiKeysInput').value = (settings.apiKeys || []).join('\n');
   $('#modelSelect').value = settings.model;
   $('#accentSelect').value = settings.accent || 'us';
   $('#dailyGoalInput').value = settings.dailyGoal || 20;
+  $('#listenBackendInput').value = settings.listenBackend || 'http://127.0.0.1:8756';
 
   bindDeckControls();
   updateLangUI();
@@ -570,6 +574,8 @@ function loadUserLocalData() {
   migrateCards();
   readerBooks = loadJSON(nsKey(LS_READER), []);
   readerSyncedLang = null;
+  listenItems = loadJSON(nsKey(LS_LISTEN), []);
+  listenSyncedLang = null;
 }
 
 // 把舊的共用資料（Firestore 頂層集合 + 本機舊 key）搬到 users/{uid} 底下
@@ -739,6 +745,7 @@ function showView(name) {
   if (name === 'batch') renderBatch();
   if (name === 'study') { renderModeGrid(); renderFolderSelects(); resetStudyToSetup(); }
   if (name === 'reader') openReader();
+  if (name === 'listen') openListen();
 }
 
 function bindNav() {
@@ -841,6 +848,12 @@ function switchLang(lang) {
   readerSyncedLang = null;
   readerCurrentBookId = null; readerCurrentTocId = null;
   if (document.querySelector('#view-reader')?.classList.contains('active')) openReader();
+  // 聽力清單也換語言
+  listenStopPlayer();
+  listenItems = loadJSON(nsKey(LS_LISTEN), []);
+  listenSyncedLang = null;
+  listenCurrentId = null;
+  if (document.querySelector('#view-listen')?.classList.contains('active')) openListen();
   toast(`已切換到${L().label}`);
 }
 
@@ -1784,6 +1797,8 @@ function bindDeckControls() {
 function setSelectMode(on) {
   selectMode = on;
   selectedIds.clear();
+  const bar = $('#selectBar');
+  if (bar) bar.hidden = !on;
   const ctrls = $('#selectControls');
   if (ctrls) ctrls.hidden = !on;
   const btn = $('#selectModeBtn');
@@ -2610,6 +2625,7 @@ function bindSettings() {
     settings.model = $('#modelSelect').value;
     settings.accent = $('#accentSelect').value;
     settings.dailyGoal = Math.max(1, parseInt($('#dailyGoalInput').value, 10) || 20);
+    settings.listenBackend = ($('#listenBackendInput').value || '').trim().replace(/\/$/, '') || 'http://127.0.0.1:8756';
     keyIndex = 0;
     saveSettings();
     renderDailyPanel();
@@ -3101,6 +3117,9 @@ async function readerDoAdd() {
     // 重新渲染文章以更新螢光筆標示
     const book = readerBooks.find(b => b.id === readerCurrentBookId);
     if (book && readerCurrentTocId && book.articles?.[readerCurrentTocId]) renderArticle(book, book.articles[readerCurrentTocId]);
+    // 聽力頁若開啟中，也刷新逐字稿螢光筆
+    const litem = listenItems.find(i => i.id === listenCurrentId);
+    if (litem && !$('#view-listen')?.hidden && document.querySelector('#view-listen')?.classList.contains('active')) renderListenItem(litem);
   } catch (e) {
     status.className = 'gen-status error';
     status.textContent = '⚠️ ' + e.message;
@@ -3244,6 +3263,407 @@ function bindReader() {
   $('#readerAddModal')?.querySelectorAll('[data-close-radd]').forEach(el => el.addEventListener('click', closeReaderAdd));
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && !$('#readerAddModal').hidden) closeReaderAdd();
+  });
+}
+
+/* =========================================================================
+   聽力（音檔 / 影片 / YouTube 逐字稿精聽）
+   item = { id, title, kind:'file'|'youtube', createdAt, updatedAt, status:'processing'|'done'|'error',
+            mediaFile (file kind，後端檔名), mediaType:'video'|'audio', videoId (youtube),
+            language, captionSource,
+            segments:[{start,end,en,zh}],
+            vocab:[{word,meaning_zh,example_en}], phrases:[{phrase,meaning_zh}],
+            grammar:[{point,explain_zh,example_en}], summary }
+   媒體檔存後端本機（不上雲）；逐字稿/翻譯/分析存本機+雲端 meta。
+   ========================================================================= */
+let listenItems = [];
+let listenCurrentId = null;
+let listenSyncedLang = null;
+let ytPlayer = null;
+let listenMediaEl = null;
+let listenPollTimer = null;
+let listenActiveIdx = -1;
+let listenPlayerId = null; // 目前播放器對應的 item id，避免重複重建
+
+function listenBackend() { return (settings.listenBackend || 'http://127.0.0.1:8756').replace(/\/$/, ''); }
+function listenLangCode() {
+  const d = (L().dictLang || '').slice(0, 2);
+  if (d) return d;
+  return currentLang.length === 2 ? currentLang : '';
+}
+function saveListenLocal() { localStorage.setItem(nsKey(LS_LISTEN), JSON.stringify(listenItems)); }
+let listenCloudTimer = null;
+function saveListenCloud() {
+  if (!currentUid || !(window.Cloud && window.Cloud.enabled && window.Cloud.saveMeta)) return;
+  clearTimeout(listenCloudTimer);
+  listenCloudTimer = setTimeout(() => window.Cloud.saveMeta(`listen_${currentLang}`, { items: listenItems }), 1500);
+}
+function saveListen() { saveListenLocal(); saveListenCloud(); }
+
+async function syncListenFromCloud() {
+  if (listenSyncedLang === currentLang) return;
+  listenSyncedLang = currentLang;
+  if (!currentUid || !(window.Cloud && window.Cloud.enabled && window.Cloud.loadMeta)) return;
+  try {
+    const meta = await window.Cloud.loadMeta(`listen_${currentLang}`);
+    if (meta && Array.isArray(meta.items)) {
+      const map = new Map();
+      listenItems.forEach(it => map.set(it.id, it));
+      meta.items.forEach(ci => { const ex = map.get(ci.id); if (!ex || (ci.updatedAt || 0) >= (ex.updatedAt || 0)) map.set(ci.id, ci); });
+      listenItems = Array.from(map.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      saveListenLocal();
+      if (!listenCurrentId) renderListen();
+    }
+  } catch (e) { console.error('讀取聽力雲端資料失敗', e); }
+}
+
+function openListen() {
+  listenItems = loadJSON(nsKey(LS_LISTEN), []);
+  renderListen();
+  syncListenFromCloud();
+  checkListenBackend();
+}
+
+async function checkListenBackend() {
+  const el = $('#listenBackendState');
+  if (!el) return;
+  el.textContent = '偵測後端…';
+  try {
+    const res = await fetch(listenBackend() + '/api/health', { cache: 'no-store' });
+    if (res.ok) { el.textContent = '🟢 轉錄後端已連線'; el.style.color = 'var(--good)'; }
+    else throw new Error();
+  } catch { el.textContent = '🔴 找不到轉錄後端（請啟動 start_server.bat）'; el.style.color = 'var(--again)'; }
+}
+
+function renderListen() {
+  const item = listenItems.find(i => i.id === listenCurrentId);
+  const lib = $('#listenLibrary'), box = $('#listenItem');
+  if (!lib || !box) return;
+  if (item) { lib.hidden = true; box.hidden = false; renderListenItem(item); }
+  else { listenStopPlayer(); lib.hidden = false; box.hidden = true; renderListenList(); }
+}
+
+function renderListenList() {
+  const el = $('#listenList');
+  if (!el) return;
+  if (!listenItems.length) {
+    el.innerHTML = '<div class="empty-state small"><p class="empty-sub">還沒有任何聽力內容。上傳音檔／影片或貼上 YouTube 網址。</p></div>';
+    return;
+  }
+  el.innerHTML = listenItems.map(it => {
+    const n = (it.segments || []).length;
+    const d = new Date(it.createdAt || Date.now());
+    const ds = `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+    const st = it.status === 'processing' ? '（處理中…）' : it.status === 'error' ? '（處理失敗）' : `${n} 段`;
+    return `<button class="reader-book-card" data-listen="${it.id}">
+      <span class="rbc-icon">${it.kind === 'youtube' ? '▶️' : (it.mediaType === 'video' ? '🎬' : '🎧')}</span>
+      <span class="rbc-info"><span class="rbc-title">${esc(it.title)}</span><span class="rbc-sub">${st} · ${ds}</span></span>
+    </button>`;
+  }).join('');
+}
+
+/* ---------- 建立聽力：上傳檔案 / YouTube ---------- */
+async function listenUploadFile(file) {
+  if (!file) return;
+  const hint = $('#listenLibHint');
+  const setHint = t => { if (hint) hint.textContent = t; };
+  try {
+    setHint('上傳並開始轉錄…（第一次載入 Whisper 模型會較久）');
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('language', listenLangCode());
+    const res = await fetch(listenBackend() + '/api/transcribe', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error('後端回應錯誤 ' + res.status);
+    const j = await res.json();
+    const item = {
+      id: uid(), title: file.name.replace(/\.[^.]+$/, ''), kind: 'file',
+      mediaFile: j.mediaFile, mediaType: j.mediaType || 'audio',
+      createdAt: now(), updatedAt: now(), status: 'processing', language: listenLangCode(),
+      segments: [], vocab: [], phrases: [], grammar: [], summary: '',
+    };
+    listenItems.unshift(item);
+    saveListen();
+    listenCurrentId = item.id; renderListen();
+    setHint('上傳完成，轉錄中…');
+    pollListenJob(j.jobId, item);
+  } catch (e) {
+    setHint('');
+    toast('上傳失敗：' + e.message + '（請確認轉錄後端已啟動）', true);
+    checkListenBackend();
+  }
+}
+
+async function listenAddYoutube(url) {
+  const hint = $('#listenLibHint');
+  const setHint = t => { if (hint) hint.textContent = t; };
+  try {
+    setHint('讀取 YouTube（優先使用現有字幕）…');
+    const res = await fetch(listenBackend() + '/api/youtube', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, language: listenLangCode() }),
+    });
+    if (!res.ok) throw new Error('後端回應錯誤 ' + res.status);
+    const j = await res.json();
+    const item = {
+      id: uid(), title: 'YouTube ' + (j.videoId || ''), kind: 'youtube', videoId: j.videoId,
+      createdAt: now(), updatedAt: now(), status: 'processing', language: listenLangCode(),
+      segments: [], vocab: [], phrases: [], grammar: [], summary: '',
+    };
+    listenItems.unshift(item);
+    saveListen();
+    listenCurrentId = item.id; renderListen();
+    pollListenJob(j.jobId, item);
+  } catch (e) {
+    setHint('');
+    toast('處理失敗：' + e.message + '（請確認轉錄後端已啟動）', true);
+    checkListenBackend();
+  }
+}
+
+async function pollListenJob(jobId, item) {
+  const side = $('#listenSide');
+  const showStage = (txt) => { if (side && listenCurrentId === item.id) side.innerHTML = `<div class="ls-processing"><span class="spinner"></span> ${esc(txt)}</div>`; };
+  let tries = 0;
+  const poll = async () => {
+    try {
+      const res = await fetch(listenBackend() + `/api/job/${jobId}`, { cache: 'no-store' });
+      const j = await res.json();
+      if (j.status === 'error') { item.status = 'error'; saveListen(); showStage('轉錄失敗：' + (j.error || '未知錯誤')); return; }
+      if (j.status !== 'done') {
+        const pct = Math.round((j.progress || 0) * 100);
+        showStage(`${j.stage || '處理中'}… ${pct}%`);
+        if (tries++ < 3000) setTimeout(poll, 1500);
+        return;
+      }
+      // 完成：取得 segments
+      const segs = (j.result && j.result.segments) || [];
+      item.segments = segs.map(s => ({ start: s.start, end: s.end, en: (s.text || '').trim(), zh: '' }));
+      item.captionSource = j.result && j.result.captionSource;
+      item.status = 'translating';
+      saveListen();
+      if (listenCurrentId === item.id) renderListenItem(item); // 先顯示英文與播放器
+      await translateListen(item, showStage);
+      await analyzeListen(item, showStage);
+      item.status = 'done'; item.updatedAt = now();
+      saveListen();
+      if (listenCurrentId === item.id) renderListenItem(item);
+      renderListenList();
+      toast('聽力精聽整理完成');
+    } catch (e) {
+      if (tries++ < 20) { setTimeout(poll, 2000); return; }
+      item.status = 'error'; saveListen();
+      showStage('連線後端失敗：' + e.message);
+    }
+  };
+  poll();
+}
+
+async function translateListen(item, showStage) {
+  const segs = item.segments || [];
+  const CH = 40;
+  const schema = { type: 'object', properties: { translations: { type: 'array', items: { type: 'string' } } }, required: ['translations'] };
+  for (let i = 0; i < segs.length; i += CH) {
+    if (showStage) showStage(`翻譯中… ${Math.min(i + CH, segs.length)}/${segs.length}`);
+    const part = segs.slice(i, i + CH);
+    const prompt = `把下面每一行英文翻成繁體中文。回傳 translations 陣列，長度與行數完全相同、順序一致（第 n 行對應第 n 個）。只輸出 JSON。\n\n${part.map((s, idx) => `${idx + 1}. ${s.en}`).join('\n')}`;
+    try {
+      const out = await readerJSON(prompt, schema, 0.3);
+      (out.translations || []).forEach((z, idx) => { if (part[idx]) part[idx].zh = z; });
+    } catch (e) { console.error('翻譯段落失敗', e); }
+    saveListenLocal();
+  }
+}
+
+async function analyzeListen(item, showStage) {
+  if (showStage) showStage('整理重要單字／片語／文法…');
+  const text = (item.segments || []).map(s => s.en).join(' ').slice(0, 16000);
+  const schema = {
+    type: 'object', properties: {
+      summary: { type: 'string' },
+      vocab: { type: 'array', items: { type: 'object', properties: { word: { type: 'string' }, meaning_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['word'] } },
+      phrases: { type: 'array', items: { type: 'object', properties: { phrase: { type: 'string' }, meaning_zh: { type: 'string' } }, required: ['phrase'] } },
+      grammar: { type: 'array', items: { type: 'object', properties: { point: { type: 'string' }, explain_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['point'] } },
+    },
+  };
+  const prompt = `你是英語聽力精聽老師。以下是一段音檔／影片的逐字稿。用繁體中文整理：\n- summary：整體大意（3–5 句）。\n- vocab：10–15 個重要單字，附中文意思(meaning_zh)與一個例句(example_en，優先取自逐字稿)。\n- phrases：5–10 個重要片語／口語搭配，附中文(meaning_zh)。\n- grammar：3–6 個重要文法／句型重點，說明用法(explain_zh)並附例句(example_en)。\n只輸出 JSON。\n\n逐字稿：\n${text}`;
+  try {
+    const out = await readerJSON(prompt, schema, 0.5);
+    item.summary = out.summary || '';
+    item.vocab = out.vocab || [];
+    item.phrases = out.phrases || [];
+    item.grammar = out.grammar || [];
+  } catch (e) { console.error('聽力分析失敗', e); }
+  saveListenLocal();
+}
+
+/* ---------- 渲染單一聽力：播放器 + 逐字稿 + 右側重點 ---------- */
+function fmtTime(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function renderListenItem(item) {
+  $('#listenTitle').textContent = item.title;
+  // 只有換了 item（或播放器不存在）才重建播放器，避免整理過程中重置播放進度
+  const hasPlayer = ytPlayer || listenMediaEl;
+  if (listenPlayerId !== item.id || !hasPlayer) renderListenPlayer(item);
+
+  const tr = $('#listenTranscript');
+  const side = $('#listenSide');
+
+  if (item.status === 'processing' || item.status === 'translating') {
+    if (!(item.segments || []).length) tr.innerHTML = '<div class="ls-processing"><span class="spinner"></span> 產生逐字稿中…</div>';
+  }
+
+  const re = buildKnownWordRegex();
+  if ((item.segments || []).length) {
+    tr.innerHTML = item.segments.map((s, i) =>
+      `<div class="ls-seg" data-i="${i}" data-start="${s.start}">
+        <span class="ls-time">${fmtTime(s.start)}</span><span class="ls-en">${highlightKnown(s.en, re)}</span>
+        ${s.zh ? `<div class="ls-zh">${esc(s.zh)}</div>` : ''}
+      </div>`).join('');
+  }
+
+  // 右側重點
+  if (item.status === 'done' || (item.vocab || []).length) {
+    const vocabHtml = (item.vocab || []).map(v => `<div class="rd-vitem">
+        <div class="rd-vhead"><b class="rd-vword">${esc(v.word)}</b>${spkw(v.word)}
+          <button class="btn ghost small rd-add-vocab" data-word="${esc(v.word)}" data-ex="${esc(v.example_en || '')}">＋ 加入詞庫</button></div>
+        ${v.meaning_zh ? `<div class="rd-vmean">${esc(v.meaning_zh)}</div>` : ''}
+        ${v.example_en ? `<div class="rd-vex">${esc(v.example_en)} <button class="speak-btn" data-speak="${esc(v.example_en)}" data-src="browser" type="button">🔊</button></div>` : ''}
+      </div>`).join('') || '<p class="hint">—</p>';
+    const phraseHtml = (item.phrases || []).map(p => `<div class="rd-pitem"><b>${esc(p.phrase)}</b>${p.meaning_zh ? ` — ${esc(p.meaning_zh)}` : ''} <button class="speak-btn" data-speak="${esc(p.phrase)}" data-src="browser" type="button">🔊</button></div>`).join('') || '<p class="hint">—</p>';
+    const grammarHtml = (item.grammar || []).map(g => `<div class="rd-pitem"><b>${esc(g.point)}</b>${g.explain_zh ? `<div class="rd-vmean">${esc(g.explain_zh)}</div>` : ''}${g.example_en ? `<div class="rd-vex">${esc(g.example_en)} <button class="speak-btn" data-speak="${esc(g.example_en)}" data-src="browser" type="button">🔊</button></div>` : ''}</div>`).join('') || '<p class="hint">—</p>';
+    side.innerHTML = `
+      ${item.summary ? `<div class="rd-summary"><div class="rd-sec-title">📌 大意 ${spkZh(item.summary)}</div><p>${esc(item.summary)}</p></div>` : ''}
+      <div class="rd-section"><div class="rd-sec-title">🔑 重要單字</div>${vocabHtml}</div>
+      <div class="rd-section"><div class="rd-sec-title">🧩 重要片語</div>${phraseHtml}</div>
+      <div class="rd-section"><div class="rd-sec-title">🏗 重要文法</div>${grammarHtml}</div>`;
+  } else if (item.status !== 'error') {
+    side.innerHTML = '<div class="ls-processing"><span class="spinner"></span> 整理重點中…</div>';
+  } else {
+    side.innerHTML = '<p class="hint">處理失敗，可刪除後重試。</p>';
+  }
+
+  listenActiveIdx = -1;
+}
+
+function renderListenPlayer(item) {
+  listenStopPlayer();
+  listenPlayerId = item.id;
+  const box = $('#listenPlayer');
+  if (item.kind === 'youtube' && item.videoId) {
+    box.classList.remove('audio-only');
+    box.innerHTML = '<div id="ytFrame"></div>';
+    ensureYT(() => {
+      ytPlayer = new YT.Player('ytFrame', {
+        videoId: item.videoId,
+        playerVars: { rel: 0, modestbranding: 1 },
+        events: { onReady: () => listenStartPolling(() => (ytPlayer && ytPlayer.getCurrentTime) ? ytPlayer.getCurrentTime() : null) },
+      });
+    });
+  } else if (item.kind === 'file' && item.mediaFile) {
+    const src = listenBackend() + '/media/' + encodeURIComponent(item.mediaFile);
+    if (item.mediaType === 'video') {
+      box.classList.remove('audio-only');
+      box.innerHTML = `<video id="lsMedia" controls src="${src}"></video>`;
+    } else {
+      box.classList.add('audio-only');
+      box.innerHTML = `<audio id="lsMedia" controls src="${src}"></audio>`;
+    }
+    listenMediaEl = $('#lsMedia');
+    listenMediaEl.addEventListener('timeupdate', () => listenSetActiveByTime(listenMediaEl.currentTime));
+  } else {
+    box.classList.add('audio-only');
+    box.innerHTML = '<p class="hint" style="color:#bbb">（沒有可播放的媒體；YouTube 需網路，本機檔案需後端運作中）</p>';
+  }
+}
+
+function ensureYT(cb) {
+  if (window.YT && window.YT.Player) { cb(); return; }
+  const t = setInterval(() => { if (window.YT && window.YT.Player) { clearInterval(t); cb(); } }, 200);
+  setTimeout(() => clearInterval(t), 10000);
+}
+
+function listenStartPolling(getTime) {
+  listenStopPolling();
+  listenPollTimer = setInterval(() => { const t = getTime(); if (typeof t === 'number') listenSetActiveByTime(t); }, 400);
+}
+function listenStopPolling() { if (listenPollTimer) { clearInterval(listenPollTimer); listenPollTimer = null; } }
+
+function listenStopPlayer() {
+  listenStopPolling();
+  if (ytPlayer && ytPlayer.destroy) { try { ytPlayer.destroy(); } catch {} }
+  ytPlayer = null;
+  listenMediaEl = null;
+  listenPlayerId = null;
+}
+
+function listenSetActiveByTime(t) {
+  const item = listenItems.find(i => i.id === listenCurrentId);
+  if (!item || !(item.segments || []).length) return;
+  const segs = item.segments;
+  let idx = -1;
+  for (let i = 0; i < segs.length; i++) {
+    if (t >= segs[i].start - 0.15) idx = i; else break;
+  }
+  if (idx === listenActiveIdx) return;
+  listenActiveIdx = idx;
+  const cont = $('#listenTranscript');
+  if (!cont) return;
+  cont.querySelectorAll('.ls-seg.active').forEach(e => e.classList.remove('active'));
+  if (idx < 0) return;
+  const el = cont.querySelector(`.ls-seg[data-i="${idx}"]`);
+  if (el) {
+    el.classList.add('active');
+    if ($('#listenFollow')?.checked) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+}
+
+function listenSeekTo(sec) {
+  if (ytPlayer && ytPlayer.seekTo) { ytPlayer.seekTo(sec, true); ytPlayer.playVideo && ytPlayer.playVideo(); }
+  else if (listenMediaEl) { listenMediaEl.currentTime = sec; listenMediaEl.play && listenMediaEl.play(); }
+}
+
+/* ---------- 綁定 ---------- */
+function bindListen() {
+  $('#listenFile')?.addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (f) listenUploadFile(f);
+  });
+  $('#listenYoutubeBtn')?.addEventListener('click', () => {
+    const url = (prompt('貼上 YouTube 網址：') || '').trim();
+    if (!url) return;
+    if (!/youtu\.?be/.test(url)) { toast('看起來不是 YouTube 網址', true); return; }
+    listenAddYoutube(url);
+  });
+  $('#listenBackBtn')?.addEventListener('click', () => { listenStopPlayer(); listenCurrentId = null; renderListen(); });
+  $('#listenRenameBtn')?.addEventListener('click', () => {
+    const it = listenItems.find(i => i.id === listenCurrentId); if (!it) return;
+    const t = (prompt('新標題', it.title) || '').trim(); if (!t) return;
+    it.title = t; it.updatedAt = now(); saveListen(); $('#listenTitle').textContent = t;
+  });
+  $('#listenDeleteBtn')?.addEventListener('click', () => {
+    const it = listenItems.find(i => i.id === listenCurrentId); if (!it) return;
+    if (!confirm(`確定刪除「${it.title}」？`)) return;
+    listenItems = listenItems.filter(i => i.id !== it.id);
+    listenStopPlayer(); listenCurrentId = null; saveListen(); renderListen();
+  });
+  $('#listenList')?.addEventListener('click', e => {
+    const b = e.target.closest('[data-listen]');
+    if (b) { listenCurrentId = b.dataset.listen; renderListen(); }
+  });
+  $('#listenTranscript')?.addEventListener('click', e => {
+    if (e.target.closest('.speak-btn')) return;
+    const seg = e.target.closest('.ls-seg');
+    if (seg) listenSeekTo(parseFloat(seg.dataset.start) || 0);
+  });
+  $('#listenSide')?.addEventListener('click', e => {
+    if (e.target.closest('.speak-btn')) return;
+    const add = e.target.closest('.rd-add-vocab');
+    if (add) openReaderAdd(add.dataset.word, add.dataset.ex);
   });
 }
 

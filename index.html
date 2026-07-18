@@ -41,6 +41,7 @@
       <button class="nav-btn" data-view="batch">批次</button>
       <button class="nav-btn" data-view="study">背誦</button>
       <button class="nav-btn" data-view="reader">閱讀</button>
+      <button class="nav-btn" data-view="listen">聽力</button>
       <button class="nav-btn" data-view="settings">設定</button>
     </nav>
     <div id="langSwitch" class="lang-switch" title="切換學習語言（各語言資料分開）"></div>
@@ -85,8 +86,7 @@
           <button class="btn ghost" id="selectModeBtn">☑ 選取</button>
         </div>
       </div>
-      <div id="selectBar" class="select-bar">
-        <button class="btn primary" data-view="study" id="quickStudyBtn">開始背誦 →</button>
+      <div id="selectBar" class="select-bar" hidden>
         <div id="selectControls" class="select-controls" hidden>
           <label class="sb-all"><input type="checkbox" id="selectAll" /> 全選</label>
           <span id="selectCount" class="sb-count">已選 0</span>
@@ -287,6 +287,49 @@
       </div>
     </section>
 
+    <!-- ===================== 聽力（音檔/影片/YouTube 逐字稿精聽） ===================== -->
+    <section id="view-listen" class="view">
+      <!-- 清單 -->
+      <div id="listenLibrary" class="reader-library">
+        <div class="reader-lib-head">
+          <h2>🎧 我的聽力</h2>
+          <div class="reader-lib-actions">
+            <label class="btn primary file-btn">
+              ＋ 上傳音檔／影片
+              <input type="file" id="listenFile" accept="audio/*,video/*" hidden />
+            </label>
+            <button class="btn ghost" id="listenYoutubeBtn">▶ YouTube 網址</button>
+            <span id="listenBackendState" class="hint"></span>
+          </div>
+        </div>
+        <p class="hint" id="listenLibHint">上傳音檔／影片，或貼上 YouTube 網址：系統會用本機 Whisper 產生逐字稿（YouTube 有字幕就直接用字幕），逐段中英對照、標出你背過的生字，並整理重要單字／片語／文法。左上播放、左下逐字稿、右側重點。<b>需先啟動本機轉錄後端</b>（語音轉錄程式碼／start_server.bat）。</p>
+        <div id="listenList" class="reader-book-list"></div>
+      </div>
+
+      <!-- 單一聽力內容 -->
+      <div id="listenItem" class="reader-book" hidden>
+        <div class="reader-book-bar">
+          <button class="btn ghost small" id="listenBackBtn">← 返回</button>
+          <h2 id="listenTitle" class="reader-book-title"></h2>
+          <div class="reader-book-tools">
+            <button class="btn ghost small" id="listenRenameBtn">✏️ 改名</button>
+            <button class="btn danger small" id="listenDeleteBtn">🗑 刪除</button>
+          </div>
+        </div>
+        <div class="listen-split">
+          <div class="listen-left">
+            <div id="listenPlayer" class="listen-player"></div>
+            <div class="listen-transcript-head">
+              <span>📝 逐字稿（點句子可跳到該處）</span>
+              <label class="listen-follow"><input type="checkbox" id="listenFollow" checked /> 自動捲動跟讀</label>
+            </div>
+            <div id="listenTranscript" class="listen-transcript"></div>
+          </div>
+          <aside id="listenSide" class="listen-side"></aside>
+        </div>
+      </div>
+    </section>
+
     <!-- ===================== 設定 ===================== -->
     <section id="view-settings" class="view">
       <h2>設定</h2>
@@ -312,6 +355,11 @@
           <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
           <option value="gemini-2.0-flash">gemini-2.0-flash</option>
         </select>
+      </label>
+      <label class="field">
+        <span class="field-label">本機轉錄後端網址（聽力頁用）</span>
+        <input type="text" id="listenBackendInput" placeholder="http://127.0.0.1:8756" autocomplete="off" spellcheck="false" />
+        <span class="field-help">聽力頁的逐字稿由本機 Whisper 產生。請先啟動「語音轉錄程式碼／start_server.bat」，此處填後端網址（預設 <code>http://127.0.0.1:8756</code>）。因是本機服務，建議用本機開啟本網站（start.bat）使用聽力功能。</span>
       </label>
       <label class="field">
         <span class="field-label">每日複習目標（張，以中英與克漏字為主）</span>
@@ -392,6 +440,8 @@
     window.pdfjsLib = pdfjsLib;
     window.dispatchEvent(new Event('pdfjs-ready'));
   </script>
+  <!-- YouTube IFrame Player API（聽力頁 YouTube 播放與跳段） -->
+  <script src="https://www.youtube.com/iframe_api"></script>
   <!-- 本機私密設定（部署後不存在，會被忽略） -->
   <script src="config.local.js" onerror="this.remove()"></script>
   <!-- Firebase / Firestore 雲端同步 -->

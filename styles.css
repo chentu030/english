@@ -834,3 +834,38 @@ body.modal-open { overflow: hidden; }
   .reader-split { grid-template-columns: 1fr; }
   .reader-toc { position: static; max-height: 240px; }
 }
+
+/* ===================== 聽力 ===================== */
+.listen-split { display: grid; grid-template-columns: 1fr 330px; gap: 16px; align-items: start; }
+.listen-left { min-width: 0; }
+.listen-player {
+  background: #000; border-radius: var(--radius); overflow: hidden; margin-bottom: 12px;
+  aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center;
+}
+.listen-player.audio-only { aspect-ratio: auto; background: var(--bg-elev); padding: 14px; }
+.listen-player video, .listen-player iframe { width: 100%; height: 100%; border: 0; display: block; }
+.listen-player audio { width: 100%; }
+.listen-transcript-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 700; margin-bottom: 8px; flex-wrap: wrap; }
+.listen-follow { font-size: 13px; font-weight: 400; color: var(--text-soft); display: inline-flex; align-items: center; gap: 5px; }
+.listen-transcript {
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 8px; max-height: 46vh; overflow-y: auto;
+}
+.ls-seg { padding: 8px 10px; border-radius: var(--radius-sm); cursor: pointer; border: 1px solid transparent; }
+.ls-seg:hover { background: var(--bg-soft); }
+.ls-seg.active { background: var(--primary-soft); border-color: var(--primary); }
+.ls-time { font-size: 11px; color: var(--text-mute); margin-right: 6px; font-variant-numeric: tabular-nums; }
+.ls-en { line-height: 1.7; color: var(--text); }
+.ls-zh { line-height: 1.6; color: var(--text-soft); font-size: 13px; margin-top: 2px; }
+
+.listen-side {
+  position: sticky; top: 72px; max-height: calc(100vh - 96px); overflow-y: auto;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px;
+}
+.ls-processing { display: flex; align-items: center; gap: 10px; color: var(--text-soft); padding: 20px 0; justify-content: center; text-align: center; }
+
+@media (max-width: 860px) {
+  .listen-split { grid-template-columns: 1fr; }
+  .listen-side { position: static; max-height: none; }
+  .listen-transcript { max-height: 40vh; }
+}
