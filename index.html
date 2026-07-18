@@ -465,6 +465,51 @@
     </div>
   </div>
 
+  <!-- ===================== YouTube 聽力彈窗 ===================== -->
+  <div id="listenYoutubeModal" class="modal" hidden>
+    <div class="modal-overlay" data-close-lyt></div>
+    <div class="modal-box" role="dialog" aria-modal="true" style="max-width:480px">
+      <div class="modal-header">
+        <span class="modal-title">加入 YouTube 聽力</span>
+        <div class="modal-actions">
+          <button class="modal-close" title="關閉" data-close-lyt>✕</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <label class="field">
+          <span class="field-label">YouTube 網址</span>
+          <input type="url" id="lytUrl" autocomplete="off" spellcheck="false" placeholder="https://youtu.be/… 或 https://www.youtube.com/watch?v=…" />
+        </label>
+        <fieldset class="lyt-opts">
+          <legend>逐字稿來源</legend>
+          <label class="lyt-opt">
+            <input type="radio" name="lytCaption" value="cc" checked />
+            <span><b>優先 CC 字幕</b><small>有字幕就用（快）；沒有才改 Whisper</small></span>
+          </label>
+          <label class="lyt-opt">
+            <input type="radio" name="lytCaption" value="whisper" />
+            <span><b>強制 Whisper 掃描</b><small>下載音訊轉錄，時間軸較準、較慢</small></span>
+          </label>
+        </fieldset>
+        <fieldset class="lyt-opts">
+          <legend>中文翻譯</legend>
+          <label class="lyt-opt">
+            <input type="radio" name="lytTranslate" value="browser" checked />
+            <span><b>瀏覽器翻譯</b><small>快速、不耗 API 額度</small></span>
+          </label>
+          <label class="lyt-opt">
+            <input type="radio" name="lytTranslate" value="gemini" />
+            <span><b>Gemini 翻譯</b><small>品質較好，較慢／耗額度</small></span>
+          </label>
+        </fieldset>
+        <div class="add-btns">
+          <button class="btn primary" id="lytConfirm" type="button">開始處理</button>
+          <button class="btn ghost" data-close-lyt type="button">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" hidden></div>
 
   <!-- PDF.js：解析上傳的 PDF 文字（閱讀頁用） -->

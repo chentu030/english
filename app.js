@@ -4012,7 +4012,8 @@ async function listenAfterTranscribe(item) {
   item.status = 'translating';
   saveListen();
   if (listenCurrentId === item.id) renderListenItem(item); // 先顯示英文與播放器
-  await translateListenBrowser(item, showStage);
+  if (item.translatePrefer === 'gemini') await translateListenGemini(item, showStage);
+  else await translateListenBrowser(item, showStage);
   await analyzeListen(item, showStage);
   item.status = 'done'; item.updatedAt = now();
   saveListen();
@@ -4214,7 +4215,9 @@ async function listenUploadFile(file) {
   }
 }
 
-async function listenAddYoutube(url) {
+async function listenAddYoutube(url, opts = {}) {
+  const forceWhisper = !!opts.forceWhisper;
+  const translatePrefer = opts.translatePrefer === 'gemini' ? 'gemini' : 'browser';
   const hint = $('#listenLibHint');
   const setHint = t => { if (hint) hint.textContent = t; };
   const vid = (url.match(/(?:v=|youtu\.be\/|\/embed\/|\/shorts\/)([A-Za-z0-9_-]{11})/) || [])[1] || '';
@@ -4222,15 +4225,19 @@ async function listenAddYoutube(url) {
     id: uid(), title: vid ? `讀取中…` : 'YouTube', kind: 'youtube', videoId: vid,
     createdAt: now(), updatedAt: now(), status: 'processing', language: listenLangCode(),
     segments: [], vocab: [], phrases: [], grammar: [], summary: '',
+    translatePrefer, forceWhisper,
   };
   listenItems.unshift(item);
   saveListen();
   listenCurrentId = item.id; renderListen();
   try {
-    setHint('讀取 YouTube（優先使用現有字幕，沒有才雲端轉錄）…');
+    setHint(forceWhisper
+      ? '強制 Whisper：下載音訊並掃描中…（較久）'
+      : '讀取 YouTube（優先 CC 字幕，沒有才雲端轉錄）…');
     const fd = new FormData();
     fd.append('url', url);
     fd.append('language', listenWhisperLang());
+    if (forceWhisper) fd.append('force_whisper', '1');
     const res = await fetch(listenBackend() + '/beidanzi/youtube', { method: 'POST', body: fd });
     if (!res.ok) throw new Error('後端回應錯誤 ' + res.status);
     const j = await res.json();
@@ -4253,7 +4260,7 @@ async function listenAddYoutube(url) {
     const src = j.captionSource;
     if (src === 'manual') toast('已使用 YouTube 人工字幕（未下載轉錄）');
     else if (src === 'auto') toast('已使用 YouTube 自動字幕 CC（未下載轉錄）');
-    else if (src === 'whisper' || j.usedWhisper) toast('無可用字幕，已下載音訊並用 Whisper 轉錄');
+    else if (src === 'whisper' || j.usedWhisper) toast(forceWhisper ? '已用 Whisper 掃描音軌' : '無可用字幕，已下載音訊並用 Whisper 轉錄');
     await listenAfterTranscribe(item);
   } catch (e) {
     item.status = 'error'; saveListen();
@@ -4263,6 +4270,37 @@ async function listenAddYoutube(url) {
     toast('處理失敗：' + e.message, true);
     checkListenBackend();
   }
+}
+
+function openListenYoutubeModal() {
+  const modal = $('#listenYoutubeModal');
+  if (!modal) return;
+  const urlEl = $('#lytUrl');
+  if (urlEl) urlEl.value = '';
+  const cc = document.querySelector('input[name="lytCaption"][value="cc"]');
+  const br = document.querySelector('input[name="lytTranslate"][value="browser"]');
+  if (cc) cc.checked = true;
+  if (br) br.checked = true;
+  modal.hidden = false;
+  document.body.classList.add('modal-open');
+  urlEl?.focus();
+}
+function closeListenYoutubeModal() {
+  const modal = $('#listenYoutubeModal');
+  if (modal) modal.hidden = true;
+  document.body.classList.remove('modal-open');
+}
+function confirmListenYoutubeModal() {
+  const url = ($('#lytUrl')?.value || '').trim();
+  if (!url) { toast('請貼上 YouTube 網址', true); return; }
+  if (!/youtu\.?be/.test(url)) { toast('看起來不是 YouTube 網址', true); return; }
+  const caption = (document.querySelector('input[name="lytCaption"]:checked') || {}).value || 'cc';
+  const translate = (document.querySelector('input[name="lytTranslate"]:checked') || {}).value || 'browser';
+  closeListenYoutubeModal();
+  listenAddYoutube(url, {
+    forceWhisper: caption === 'whisper',
+    translatePrefer: translate === 'gemini' ? 'gemini' : 'browser',
+  });
 }
 
 async function analyzeListen(item, showStage) {
@@ -4578,11 +4616,16 @@ function bindListen() {
     e.target.value = '';
     if (f) listenUploadFile(f);
   });
-  $('#listenYoutubeBtn')?.addEventListener('click', () => {
-    const url = (prompt('貼上 YouTube 網址：') || '').trim();
-    if (!url) return;
-    if (!/youtu\.?be/.test(url)) { toast('看起來不是 YouTube 網址', true); return; }
-    listenAddYoutube(url);
+  $('#listenYoutubeBtn')?.addEventListener('click', openListenYoutubeModal);
+  $('#lytConfirm')?.addEventListener('click', confirmListenYoutubeModal);
+  $('#listenYoutubeModal')?.addEventListener('click', e => {
+    if (e.target.closest('[data-close-lyt]')) closeListenYoutubeModal();
+  });
+  $('#lytUrl')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); confirmListenYoutubeModal(); }
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && $('#listenYoutubeModal') && !$('#listenYoutubeModal').hidden) closeListenYoutubeModal();
   });
   $('#listenBackBtn')?.addEventListener('click', () => { listenStopPlayer(); listenCurrentId = null; renderListen(); });
   $('#listenRenameBtn')?.addEventListener('click', () => {

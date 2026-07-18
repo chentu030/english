@@ -983,6 +983,23 @@ html.hide-zh .ls-zh { display: none !important; }
 }
 .ls-processing { display: flex; align-items: center; gap: 10px; color: var(--text-soft); padding: 20px 0; justify-content: center; text-align: center; }
 
+.lyt-opts {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 10px 12px 12px; margin: 0 0 14px; background: var(--bg-soft);
+}
+.lyt-opts legend {
+  padding: 0 6px; font-size: 12px; font-weight: 700; color: var(--text-mute);
+}
+.lyt-opt {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 6px; border-radius: 8px; cursor: pointer;
+}
+.lyt-opt:hover { background: var(--bg-elev); }
+.lyt-opt input { margin-top: 3px; flex-shrink: 0; }
+.lyt-opt span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.lyt-opt b { font-size: 14px; color: var(--text); font-weight: 700; }
+.lyt-opt small { font-size: 12px; color: var(--text-soft); line-height: 1.4; }
+
 @media (max-width: 860px) {
   body:has(#view-listen.active #listenItem:not([hidden])) { height: auto; overflow: auto; display: block; }
   body:has(#view-listen.active #listenItem:not([hidden])) .container {
