@@ -126,7 +126,7 @@ const DEFAULT_SETTINGS = {
   model: 'gemini-3-flash-preview',
   accent: 'us', // us | uk
   dailyGoal: 20,
-  listenBackend: 'http://127.0.0.1:8756', // 本機轉錄後端
+  listenBackend: 'https://whisper-api-1016448029865.asia-east1.run.app/api', // 雲端轉錄後端（Cloud Run + Replicate）
 };
 
 let keyIndex = 0;          // 金鑰輪詢游標
@@ -477,7 +477,7 @@ function init() {
   $('#modelSelect').value = settings.model;
   $('#accentSelect').value = settings.accent || 'us';
   $('#dailyGoalInput').value = settings.dailyGoal || 20;
-  $('#listenBackendInput').value = settings.listenBackend || 'http://127.0.0.1:8756';
+  $('#listenBackendInput').value = settings.listenBackend || 'https://whisper-api-1016448029865.asia-east1.run.app/api';
 
   bindDeckControls();
   updateLangUI();
@@ -2625,7 +2625,7 @@ function bindSettings() {
     settings.model = $('#modelSelect').value;
     settings.accent = $('#accentSelect').value;
     settings.dailyGoal = Math.max(1, parseInt($('#dailyGoalInput').value, 10) || 20);
-    settings.listenBackend = ($('#listenBackendInput').value || '').trim().replace(/\/$/, '') || 'http://127.0.0.1:8756';
+    settings.listenBackend = ($('#listenBackendInput').value || '').trim().replace(/\/$/, '') || 'https://whisper-api-1016448029865.asia-east1.run.app/api';
     keyIndex = 0;
     saveSettings();
     renderDailyPanel();
@@ -3269,12 +3269,12 @@ function bindReader() {
 /* =========================================================================
    聽力（音檔 / 影片 / YouTube 逐字稿精聽）
    item = { id, title, kind:'file'|'youtube', createdAt, updatedAt, status:'processing'|'done'|'error',
-            mediaFile (file kind，後端檔名), mediaType:'video'|'audio', videoId (youtube),
+            mediaUrl (file kind，Firebase Storage 公開下載網址), mediaType:'video'|'audio', videoId (youtube),
             language, captionSource,
             segments:[{start,end,en,zh}],
             vocab:[{word,meaning_zh,example_en}], phrases:[{phrase,meaning_zh}],
             grammar:[{point,explain_zh,example_en}], summary }
-   媒體檔存後端本機（不上雲）；逐字稿/翻譯/分析存本機+雲端 meta。
+   媒體檔由雲端後端存進 Firebase Storage（stt-tool 專案）；逐字稿/翻譯/分析存本機+雲端 meta。
    ========================================================================= */
 let listenItems = [];
 let listenCurrentId = null;
@@ -3285,12 +3285,15 @@ let listenPollTimer = null;
 let listenActiveIdx = -1;
 let listenPlayerId = null; // 目前播放器對應的 item id，避免重複重建
 
-function listenBackend() { return (settings.listenBackend || 'http://127.0.0.1:8756').replace(/\/$/, ''); }
+function listenBackend() { return (settings.listenBackend || 'https://whisper-api-1016448029865.asia-east1.run.app/api').replace(/\/$/, ''); }
 function listenLangCode() {
   const d = (L().dictLang || '').slice(0, 2);
   if (d) return d;
   return currentLang.length === 2 ? currentLang : '';
 }
+// Whisper 語言名稱（Replicate incredibly-fast-whisper 用全名；未知則交給自動偵測）
+const WHISPER_LANG_NAME = { en: 'english', de: 'german', ja: 'japanese', fr: 'french', ko: 'korean', es: 'spanish', nl: 'dutch', ru: 'russian', vi: 'vietnamese' };
+function listenWhisperLang() { return WHISPER_LANG_NAME[listenLangCode()] || 'None'; }
 function saveListenLocal() { localStorage.setItem(nsKey(LS_LISTEN), JSON.stringify(listenItems)); }
 let listenCloudTimer = null;
 function saveListenCloud() {
@@ -3327,12 +3330,12 @@ function openListen() {
 async function checkListenBackend() {
   const el = $('#listenBackendState');
   if (!el) return;
-  el.textContent = '偵測後端…';
+  el.textContent = '偵測雲端後端…';
   try {
-    const res = await fetch(listenBackend() + '/api/health', { cache: 'no-store' });
-    if (res.ok) { el.textContent = '🟢 轉錄後端已連線'; el.style.color = 'var(--good)'; }
+    const res = await fetch(listenBackend() + '/health', { cache: 'no-store' });
+    if (res.ok) { el.textContent = '🟢 雲端轉錄後端已連線'; el.style.color = 'var(--good)'; }
     else throw new Error();
-  } catch { el.textContent = '🔴 找不到轉錄後端（請啟動 start_server.bat）'; el.style.color = 'var(--again)'; }
+  } catch { el.textContent = '🔴 連不上雲端轉錄後端（請確認 Cloud Run 已部署且網址正確）'; el.style.color = 'var(--again)'; }
 }
 
 function renderListen() {
@@ -3362,33 +3365,57 @@ function renderListenList() {
   }).join('');
 }
 
-/* ---------- 建立聽力：上傳檔案 / YouTube ---------- */
+/* ---------- 建立聽力：上傳檔案 / YouTube（雲端 Cloud Run + Replicate） ---------- */
+// 轉錄完成後統一做翻譯 + 重點分析
+async function listenAfterTranscribe(item) {
+  const side = $('#listenSide');
+  const showStage = (txt) => { if (side && listenCurrentId === item.id) side.innerHTML = `<div class="ls-processing"><span class="spinner"></span> ${esc(txt)}</div>`; };
+  item.status = 'translating';
+  saveListen();
+  if (listenCurrentId === item.id) renderListenItem(item); // 先顯示英文與播放器
+  await translateListen(item, showStage);
+  await analyzeListen(item, showStage);
+  item.status = 'done'; item.updatedAt = now();
+  saveListen();
+  if (listenCurrentId === item.id) renderListenItem(item);
+  renderListenList();
+  toast('聽力精聽整理完成');
+}
+
 async function listenUploadFile(file) {
   if (!file) return;
   const hint = $('#listenLibHint');
   const setHint = t => { if (hint) hint.textContent = t; };
+  // 先建立處理中的項目讓使用者看到進度
+  const item = {
+    id: uid(), title: file.name.replace(/\.[^.]+$/, ''), kind: 'file',
+    mediaUrl: '', mediaType: /\.(mp4|mkv|avi|mov|webm|m4v)$/i.test(file.name) ? 'video' : 'audio',
+    createdAt: now(), updatedAt: now(), status: 'processing', language: listenLangCode(),
+    segments: [], vocab: [], phrases: [], grammar: [], summary: '',
+  };
+  listenItems.unshift(item);
+  saveListen();
+  listenCurrentId = item.id; renderListen();
   try {
-    setHint('上傳並開始轉錄…（第一次載入 Whisper 模型會較久）');
+    setHint('上傳並雲端轉錄中…（長音檔可能需要數分鐘，請勿關閉此頁）');
     const fd = new FormData();
     fd.append('file', file);
-    fd.append('language', listenLangCode());
-    const res = await fetch(listenBackend() + '/api/transcribe', { method: 'POST', body: fd });
+    fd.append('language', listenWhisperLang());
+    const res = await fetch(listenBackend() + '/beidanzi/upload', { method: 'POST', body: fd });
     if (!res.ok) throw new Error('後端回應錯誤 ' + res.status);
     const j = await res.json();
-    const item = {
-      id: uid(), title: file.name.replace(/\.[^.]+$/, ''), kind: 'file',
-      mediaFile: j.mediaFile, mediaType: j.mediaType || 'audio',
-      createdAt: now(), updatedAt: now(), status: 'processing', language: listenLangCode(),
-      segments: [], vocab: [], phrases: [], grammar: [], summary: '',
-    };
-    listenItems.unshift(item);
+    item.mediaUrl = j.mediaUrl || '';
+    item.mediaType = j.mediaType || item.mediaType;
+    item.segments = (j.segments || []).map(s => ({ start: s.start, end: s.end, en: (s.text || '').trim(), zh: '' }));
     saveListen();
-    listenCurrentId = item.id; renderListen();
-    setHint('上傳完成，轉錄中…');
-    pollListenJob(j.jobId, item);
-  } catch (e) {
     setHint('');
-    toast('上傳失敗：' + e.message + '（請確認轉錄後端已啟動）', true);
+    await listenAfterTranscribe(item);
+  } catch (e) {
+    item.status = 'error'; saveListen();
+    if (listenCurrentId === item.id) renderListenItem(item);
+    renderListenList();
+    setHint('');
+    toast('上傳失敗：' + e.message, true);
     checkListenBackend();
   }
 }
@@ -3396,66 +3423,37 @@ async function listenUploadFile(file) {
 async function listenAddYoutube(url) {
   const hint = $('#listenLibHint');
   const setHint = t => { if (hint) hint.textContent = t; };
+  const vid = (url.match(/(?:v=|youtu\.be\/|\/embed\/|\/shorts\/)([A-Za-z0-9_-]{11})/) || [])[1] || '';
+  const item = {
+    id: uid(), title: 'YouTube ' + (vid || ''), kind: 'youtube', videoId: vid,
+    createdAt: now(), updatedAt: now(), status: 'processing', language: listenLangCode(),
+    segments: [], vocab: [], phrases: [], grammar: [], summary: '',
+  };
+  listenItems.unshift(item);
+  saveListen();
+  listenCurrentId = item.id; renderListen();
   try {
-    setHint('讀取 YouTube（優先使用現有字幕）…');
-    const res = await fetch(listenBackend() + '/api/youtube', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, language: listenLangCode() }),
-    });
+    setHint('讀取 YouTube（優先使用現有字幕，沒有才雲端轉錄）…');
+    const fd = new FormData();
+    fd.append('url', url);
+    fd.append('language', listenWhisperLang());
+    const res = await fetch(listenBackend() + '/beidanzi/youtube', { method: 'POST', body: fd });
     if (!res.ok) throw new Error('後端回應錯誤 ' + res.status);
     const j = await res.json();
-    const item = {
-      id: uid(), title: 'YouTube ' + (j.videoId || ''), kind: 'youtube', videoId: j.videoId,
-      createdAt: now(), updatedAt: now(), status: 'processing', language: listenLangCode(),
-      segments: [], vocab: [], phrases: [], grammar: [], summary: '',
-    };
-    listenItems.unshift(item);
+    item.videoId = j.videoId || vid;
+    item.captionSource = j.captionSource;
+    item.segments = (j.segments || []).map(s => ({ start: s.start, end: s.end, en: (s.text || '').trim(), zh: '' }));
     saveListen();
-    listenCurrentId = item.id; renderListen();
-    pollListenJob(j.jobId, item);
-  } catch (e) {
     setHint('');
-    toast('處理失敗：' + e.message + '（請確認轉錄後端已啟動）', true);
+    await listenAfterTranscribe(item);
+  } catch (e) {
+    item.status = 'error'; saveListen();
+    if (listenCurrentId === item.id) renderListenItem(item);
+    renderListenList();
+    setHint('');
+    toast('處理失敗：' + e.message, true);
     checkListenBackend();
   }
-}
-
-async function pollListenJob(jobId, item) {
-  const side = $('#listenSide');
-  const showStage = (txt) => { if (side && listenCurrentId === item.id) side.innerHTML = `<div class="ls-processing"><span class="spinner"></span> ${esc(txt)}</div>`; };
-  let tries = 0;
-  const poll = async () => {
-    try {
-      const res = await fetch(listenBackend() + `/api/job/${jobId}`, { cache: 'no-store' });
-      const j = await res.json();
-      if (j.status === 'error') { item.status = 'error'; saveListen(); showStage('轉錄失敗：' + (j.error || '未知錯誤')); return; }
-      if (j.status !== 'done') {
-        const pct = Math.round((j.progress || 0) * 100);
-        showStage(`${j.stage || '處理中'}… ${pct}%`);
-        if (tries++ < 3000) setTimeout(poll, 1500);
-        return;
-      }
-      // 完成：取得 segments
-      const segs = (j.result && j.result.segments) || [];
-      item.segments = segs.map(s => ({ start: s.start, end: s.end, en: (s.text || '').trim(), zh: '' }));
-      item.captionSource = j.result && j.result.captionSource;
-      item.status = 'translating';
-      saveListen();
-      if (listenCurrentId === item.id) renderListenItem(item); // 先顯示英文與播放器
-      await translateListen(item, showStage);
-      await analyzeListen(item, showStage);
-      item.status = 'done'; item.updatedAt = now();
-      saveListen();
-      if (listenCurrentId === item.id) renderListenItem(item);
-      renderListenList();
-      toast('聽力精聽整理完成');
-    } catch (e) {
-      if (tries++ < 20) { setTimeout(poll, 2000); return; }
-      item.status = 'error'; saveListen();
-      showStage('連線後端失敗：' + e.message);
-    }
-  };
-  poll();
 }
 
 async function translateListen(item, showStage) {
@@ -3563,8 +3561,8 @@ function renderListenPlayer(item) {
         events: { onReady: () => listenStartPolling(() => (ytPlayer && ytPlayer.getCurrentTime) ? ytPlayer.getCurrentTime() : null) },
       });
     });
-  } else if (item.kind === 'file' && item.mediaFile) {
-    const src = listenBackend() + '/media/' + encodeURIComponent(item.mediaFile);
+  } else if (item.kind === 'file' && item.mediaUrl) {
+    const src = item.mediaUrl;
     if (item.mediaType === 'video') {
       box.classList.remove('audio-only');
       box.innerHTML = `<video id="lsMedia" controls src="${src}"></video>`;
@@ -3576,7 +3574,7 @@ function renderListenPlayer(item) {
     listenMediaEl.addEventListener('timeupdate', () => listenSetActiveByTime(listenMediaEl.currentTime));
   } else {
     box.classList.add('audio-only');
-    box.innerHTML = '<p class="hint" style="color:#bbb">（沒有可播放的媒體；YouTube 需網路，本機檔案需後端運作中）</p>';
+    box.innerHTML = '<p class="hint" style="color:#bbb">（媒體尚未就緒；轉錄完成後即可播放）</p>';
   }
 }
 

@@ -302,7 +302,7 @@
             <span id="listenBackendState" class="hint"></span>
           </div>
         </div>
-        <p class="hint" id="listenLibHint">上傳音檔／影片，或貼上 YouTube 網址：系統會用本機 Whisper 產生逐字稿（YouTube 有字幕就直接用字幕），逐段中英對照、標出你背過的生字，並整理重要單字／片語／文法。左上播放、左下逐字稿、右側重點。<b>需先啟動本機轉錄後端</b>（語音轉錄程式碼／start_server.bat）。</p>
+        <p class="hint" id="listenLibHint">上傳音檔／影片，或貼上 YouTube 網址：系統會用雲端 Whisper（Replicate）產生逐字稿（YouTube 有字幕就直接用字幕），逐段中英對照、標出你背過的生字，並整理重要單字／片語／文法。左上播放、左下逐字稿、右側重點。檔案會存到雲端，換裝置也能重看。</p>
         <div id="listenList" class="reader-book-list"></div>
       </div>
 
@@ -357,9 +357,9 @@
         </select>
       </label>
       <label class="field">
-        <span class="field-label">本機轉錄後端網址（聽力頁用）</span>
-        <input type="text" id="listenBackendInput" placeholder="http://127.0.0.1:8756" autocomplete="off" spellcheck="false" />
-        <span class="field-help">聽力頁的逐字稿由本機 Whisper 產生。請先啟動「語音轉錄程式碼／start_server.bat」，此處填後端網址（預設 <code>http://127.0.0.1:8756</code>）。因是本機服務，建議用本機開啟本網站（start.bat）使用聽力功能。</span>
+        <span class="field-label">雲端轉錄後端網址（聽力頁用）</span>
+        <input type="text" id="listenBackendInput" placeholder="https://whisper-api-1016448029865.asia-east1.run.app/api" autocomplete="off" spellcheck="false" />
+        <span class="field-help">聽力頁的逐字稿由雲端 Whisper（Replicate，Cloud Run）產生，音檔／影片存到 Firebase Storage，跨裝置皆可重看。預設已指向你的後端 <code>whisper-api-…run.app/api</code>，一般不需修改。</span>
       </label>
       <label class="field">
         <span class="field-label">每日複習目標（張，以中英與克漏字為主）</span>
