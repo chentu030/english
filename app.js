@@ -491,6 +491,19 @@ function toggleHideZh() {
 /* =========================================================================
    初始化
    ========================================================================= */
+function bindAutoHideScrollbars() {
+  // 滾動／觸控時短暫顯示捲軸（懸停已由 CSS :hover 處理）
+  const show = (el) => {
+    if (!(el instanceof Element)) return;
+    el.classList.add('is-scrolling');
+    clearTimeout(el._scrollBarT);
+    el._scrollBarT = setTimeout(() => el.classList.remove('is-scrolling'), 1000);
+  };
+  document.addEventListener('scroll', e => show(e.target === document ? document.documentElement : e.target), true);
+  document.addEventListener('wheel', e => show(e.target.closest('*')), { passive: true, capture: true });
+  document.addEventListener('touchmove', e => show(e.target.closest('*')), { passive: true, capture: true });
+}
+
 function init() {
   loadCustomLangs();
   if (!allLangs()[currentLang]) currentLang = 'en';
