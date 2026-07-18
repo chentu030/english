@@ -1010,7 +1010,12 @@ body:has(#view-listen.active #listenItem:not([hidden])) .container {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   font-weight: 700; font-size: 13px; margin-bottom: 6px; flex-wrap: wrap; flex-shrink: 0;
 }
-.lth-tools { display: inline-flex; align-items: center; gap: 8px; }
+.lth-tools { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lth-tools .btn.small.active {
+  background: var(--primary-soft);
+  color: var(--primary);
+  border-color: var(--primary);
+}
 .listen-follow { font-size: 12px; font-weight: 400; color: var(--text-soft); display: inline-flex; align-items: center; gap: 5px; }
 .listen-transcript {
   background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius);

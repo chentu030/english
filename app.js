@@ -4106,8 +4106,10 @@ async function relistenTranslateGemini(item) {
   if (!segs.length) { toast('沒有逐字稿', true); return; }
   const btn = $('#listenGeminiTranslate'); const orig = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = '翻譯中…'; }
+  setListenToolBusy(true);
   const showStage = (t) => { if (btn) btn.textContent = t; };
   try {
+    item.translatePrefer = 'gemini';
     await translateListenGemini(item, showStage);
     item.updatedAt = now(); saveListen();
     if (listenCurrentId === item.id) renderListenItem(item);
@@ -4115,7 +4117,114 @@ async function relistenTranslateGemini(item) {
   } catch (e) {
     toast('Gemini 翻譯失敗：' + e.message, true);
   } finally {
+    setListenToolBusy(false);
     if (btn) { btn.disabled = false; btn.textContent = orig || '✨ Gemini 翻譯'; }
+  }
+}
+
+/** 使用者按「瀏覽器翻譯」：整篇重翻 */
+async function relistenTranslateBrowser(item) {
+  const segs = item.segments || [];
+  if (!segs.length) { toast('沒有逐字稿', true); return; }
+  const btn = $('#listenBrowserTranslate'); const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '翻譯中…'; }
+  setListenToolBusy(true);
+  const showStage = (t) => { if (btn) btn.textContent = t; };
+  try {
+    item.translatePrefer = 'browser';
+    await translateListenBrowser(item, showStage);
+    item.updatedAt = now(); saveListen();
+    if (listenCurrentId === item.id) renderListenItem(item);
+    toast('瀏覽器翻譯完成');
+  } catch (e) {
+    toast('瀏覽器翻譯失敗：' + e.message, true);
+  } finally {
+    setListenToolBusy(false);
+    if (btn) { btn.disabled = false; btn.textContent = orig || '🌐 瀏覽器翻譯'; }
+  }
+}
+
+function setListenToolBusy(on) {
+  ['listenCcRescan', 'listenWhisperRescan', 'listenBrowserTranslate', 'listenGeminiTranslate'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && !on) el.disabled = false;
+    else if (el && on && document.activeElement !== el) el.disabled = true;
+  });
+}
+
+function updateListenSourceButtons(item) {
+  const cc = $('#listenCcRescan');
+  const wh = $('#listenWhisperRescan');
+  const br = $('#listenBrowserTranslate');
+  const gm = $('#listenGeminiTranslate');
+  const yt = item && item.kind === 'youtube' && !!item.videoId;
+  if (cc) {
+    cc.hidden = !yt;
+    cc.classList.toggle('active', yt && item.captionSource !== 'whisper');
+  }
+  if (wh) {
+    wh.hidden = !yt;
+    wh.classList.toggle('active', yt && item.captionSource === 'whisper');
+  }
+  if (br) br.classList.toggle('active', item && item.translatePrefer !== 'gemini' && item.translateEngine !== 'gemini');
+  if (gm) gm.classList.toggle('active', item && (item.translatePrefer === 'gemini' || item.translateEngine === 'gemini'));
+}
+
+/** 改回 YouTube CC／自動字幕（不強制 Whisper） */
+async function listenForceCc(item) {
+  if (!item || item.kind !== 'youtube' || !item.videoId) {
+    toast('目前僅支援 YouTube 切換 CC 字幕', true);
+    return;
+  }
+  if (item.captionSource === 'manual' || item.captionSource === 'auto') {
+    if (!confirm('目前已是 CC 字幕，要重新抓一次嗎？')) return;
+  } else if (!confirm('改回使用 YouTube CC／自動字幕（會覆寫目前逐字稿）。確定？')) {
+    return;
+  }
+  const btn = $('#listenCcRescan'); const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '抓取中…'; }
+  setListenToolBusy(true);
+  const side = $('#listenSide');
+  const showStage = (txt) => {
+    if (btn) btn.textContent = txt.slice(0, 18);
+    if (side && listenCurrentId === item.id) side.innerHTML = `<div class="ls-processing"><span class="spinner"></span> ${esc(txt)}</div>`;
+  };
+  const prevStatus = item.status;
+  item.status = 'processing';
+  saveListen();
+  if (listenCurrentId === item.id) renderListenItem(item);
+  try {
+    showStage('抓取 YouTube CC 字幕中…');
+    const fd = new FormData();
+    fd.append('url', 'https://www.youtube.com/watch?v=' + item.videoId);
+    fd.append('language', listenWhisperLang());
+    // 不帶 force_whisper → 後端優先 CC
+    const res = await fetch(listenBackend() + '/beidanzi/youtube', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error('後端回應錯誤 ' + res.status);
+    const j = await res.json();
+    if (j.captionSource === 'whisper' || j.usedWhisper) {
+      throw new Error('此影片抓不到 CC 字幕（後端改走了 Whisper）。可改按 Whisper。');
+    }
+    item.captionSource = j.captionSource || 'auto';
+    if (j.title) item.title = j.title;
+    item.segments = (j.segments || []).map(s => ({ start: s.start, end: s.end, en: (s.text || '').trim(), zh: '' }));
+    item.summary = ''; item.vocab = []; item.phrases = []; item.grammar = [];
+    item.updatedAt = now();
+    saveListen();
+    if (listenCurrentId === item.id) {
+      const tEl = $('#listenTitle'); if (tEl && item.title) tEl.textContent = item.title;
+      renderListenItem(item);
+    }
+    toast(`已改用 ${item.captionSource === 'manual' ? '人工' : '自動'}字幕，開始翻譯與整理…`);
+    await listenAfterTranscribe(item);
+  } catch (e) {
+    item.status = prevStatus === 'done' ? 'done' : 'error';
+    saveListen();
+    if (listenCurrentId === item.id) renderListenItem(item);
+    toast('CC 字幕失敗：' + e.message, true);
+  } finally {
+    setListenToolBusy(false);
+    if (btn) { btn.disabled = false; btn.textContent = orig || '📄 CC 字幕'; }
   }
 }
 
@@ -4132,6 +4241,7 @@ async function listenForceWhisper(item) {
   }
   const btn = $('#listenWhisperRescan'); const orig = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = '掃描中…'; }
+  setListenToolBusy(true);
   const side = $('#listenSide');
   const showStage = (txt) => {
     if (btn) btn.textContent = txt.slice(0, 18);
@@ -4168,7 +4278,8 @@ async function listenForceWhisper(item) {
     if (listenCurrentId === item.id) renderListenItem(item);
     toast('Whisper 掃描失敗：' + e.message, true);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = orig || '🎙 Whisper 掃描'; }
+    setListenToolBusy(false);
+    if (btn) { btn.disabled = false; btn.textContent = orig || '🎙 Whisper'; }
   }
 }
 
@@ -4421,14 +4532,7 @@ function fmtTime(sec) {
 
 function renderListenItem(item) {
   $('#listenTitle').textContent = item.title;
-  const whisperBtn = $('#listenWhisperRescan');
-  if (whisperBtn) {
-    const canWhisper = item.kind === 'youtube' && !!item.videoId;
-    whisperBtn.hidden = !canWhisper;
-    whisperBtn.title = item.captionSource === 'whisper'
-      ? '已是 Whisper 逐字稿，可再掃描一次'
-      : 'CC 時間軸對不齊時，改下載音訊用 Whisper 掃描';
-  }
+  updateListenSourceButtons(item);
   // 只有換了 item（或播放器不存在）才重建播放器，避免整理過程中重置播放進度
   const hasPlayer = ytPlayer || listenMediaEl;
   if (listenPlayerId !== item.id || !hasPlayer) renderListenPlayer(item);
@@ -4658,9 +4762,17 @@ function bindListen() {
     addListenSideVocab(word, example, Number.isFinite(start) ? start : undefined);
   });
   $('#listenToggleZh')?.addEventListener('click', toggleHideZh);
+  $('#listenCcRescan')?.addEventListener('click', () => {
+    const it = listenItems.find(i => i.id === listenCurrentId);
+    if (it) listenForceCc(it);
+  });
   $('#listenWhisperRescan')?.addEventListener('click', () => {
     const it = listenItems.find(i => i.id === listenCurrentId);
     if (it) listenForceWhisper(it);
+  });
+  $('#listenBrowserTranslate')?.addEventListener('click', () => {
+    const it = listenItems.find(i => i.id === listenCurrentId);
+    if (it) relistenTranslateBrowser(it);
   });
   $('#listenGeminiTranslate')?.addEventListener('click', () => {
     const it = listenItems.find(i => i.id === listenCurrentId);
