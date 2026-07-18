@@ -3908,7 +3908,7 @@ function bindReader() {
             language, captionSource,
             segments:[{start,end,en,zh}],
             vocab:[{word,meaning_zh,example_en,example_start}], phrases:[{phrase,meaning_zh,example_en,example_start}],
-            grammar:[{point,explain_zh,example_en,example_start}], summary }
+            grammar:[{point,explain_zh,example_en,example_start}], mindmap:{title,branches:[{title,bullets[]}]}, summary }
    媒體檔由雲端後端存進 Firebase Storage（stt-tool 專案）；逐字稿/翻譯/分析存本機+雲端 meta。
    ========================================================================= */
 let listenItems = [];
@@ -4208,7 +4208,7 @@ async function listenForceCc(item) {
     item.captionSource = j.captionSource || 'auto';
     if (j.title) item.title = j.title;
     item.segments = (j.segments || []).map(s => ({ start: s.start, end: s.end, en: (s.text || '').trim(), zh: '' }));
-    item.summary = ''; item.vocab = []; item.phrases = []; item.grammar = [];
+    item.summary = ''; item.vocab = []; item.phrases = []; item.grammar = []; item.mindmap = null;
     item.updatedAt = now();
     saveListen();
     if (listenCurrentId === item.id) {
@@ -4263,7 +4263,7 @@ async function listenForceWhisper(item) {
     item.captionSource = j.captionSource || 'whisper';
     if (j.title) item.title = j.title;
     item.segments = (j.segments || []).map(s => ({ start: s.start, end: s.end, en: (s.text || '').trim(), zh: '' }));
-    item.summary = ''; item.vocab = []; item.phrases = []; item.grammar = [];
+    item.summary = ''; item.vocab = []; item.phrases = []; item.grammar = []; item.mindmap = null;
     item.updatedAt = now();
     saveListen();
     if (listenCurrentId === item.id) {
@@ -4458,7 +4458,77 @@ async function analyzeListen(item, showStage) {
     attachListenExampleStarts(item);
   } catch (e) { console.error('聽力片語／文法分析失敗', e); }
 
+  // 3) 心智圖大綱（獨立一輪）
+  if (showStage) showStage('整理心智圖大綱…');
+  try {
+    item.mindmap = await generateListenMindmap(text);
+    if (listenCurrentId === item.id) renderListenItem(item);
+  } catch (e) { console.error('聽力心智圖失敗', e); }
+
   saveListenLocal();
+}
+
+async function generateListenMindmap(text) {
+  const schema = {
+    type: 'object',
+    properties: {
+      title: { type: 'string' },
+      branches: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            bullets: { type: 'array', items: { type: 'string' } },
+          },
+          required: ['title'],
+        },
+      },
+    },
+    required: ['title', 'branches'],
+  };
+  const out = await readerJSON(
+    `你是英語聽力精聽老師。根據以下逐字稿，用繁體中文產出「心智圖大綱」方便複習：\n- title：整段內容的中心主題（短句）\n- branches：4–8 個主分支；每個含 title（分支名）與 bullets（2–5 個短要點）\n要點請精煉、抓住論點與因果，不要逐句抄稿。只輸出 JSON。\n\n逐字稿：\n${text}`,
+    schema, 0.4, 4096,
+  );
+  return {
+    title: out.title || '',
+    branches: Array.isArray(out.branches) ? out.branches : [],
+  };
+}
+
+function listenCollapseState() {
+  try { return JSON.parse(localStorage.getItem('listen_collapse_v1') || '{}') || {}; }
+  catch { return {}; }
+}
+function setListenCollapse(key, collapsed) {
+  const st = listenCollapseState();
+  st[key] = !!collapsed;
+  localStorage.setItem('listen_collapse_v1', JSON.stringify(st));
+}
+function listenCollapseHtml(key, titleInner, bodyInner) {
+  const collapsed = !!listenCollapseState()[key];
+  return `<div class="rd-collapse${collapsed ? ' collapsed' : ''}" data-collapse="${esc(key)}">
+    <div class="rd-collapse-head" role="button" tabindex="0" title="點擊收合／展開">
+      <span class="rd-collapse-chevron" aria-hidden="true">▾</span>
+      <div class="rd-sec-title">${titleInner}</div>
+    </div>
+    <div class="rd-collapse-body">${bodyInner}</div>
+  </div>`;
+}
+function renderListenMindmap(mm) {
+  if (!mm || (!mm.title && !(mm.branches || []).length)) return '<p class="hint">—</p>';
+  const branches = (mm.branches || []).map(b => {
+    const bullets = (b.bullets || []).map(x => `<li>${esc(x)}</li>`).join('');
+    return `<li class="mm-branch">
+      <div class="mm-branch-title">${esc(b.title || '')}</div>
+      ${bullets ? `<ul class="mm-bullets">${bullets}</ul>` : ''}
+    </li>`;
+  }).join('');
+  return `<div class="mm-map">
+    <div class="mm-center">${esc(mm.title || '大綱')}</div>
+    ${branches ? `<ul class="mm-branches">${branches}</ul>` : ''}
+  </div>`;
 }
 
 // 依逐字稿幫例句對上時間戳，方便點擊跳轉
@@ -4489,7 +4559,7 @@ function attachListenExampleStarts(item) {
 }
 
 
-// 重新生成某一部分重點（summary / vocab / phrases / grammar）
+// 重新生成某一部分重點（summary / vocab / phrases / grammar / mindmap）
 async function relistenAnalyze(item, part) {
   const text = (item.segments || []).map(s => s.en).join(' ').slice(0, 16000);
   if (!text.trim()) { toast('沒有逐字稿內容', true); return; }
@@ -4510,6 +4580,15 @@ async function relistenAnalyze(item, part) {
     schema = { type: 'object', properties: { grammar: { type: 'array', items: { type: 'object', properties: { point: { type: 'string' }, explain_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['point'] } } }, required: ['grammar'] };
     prompt = `從以下逐字稿挑出 3–6 個重要文法／句型重點，用繁體中文說明用法(explain_zh)並附原文例句(example_en，必須儘量直接取自逐字稿原句)。只輸出 JSON。\n\n逐字稿：\n${text}`;
     apply = o => { item.grammar = o.grammar || []; };
+  } else if (part === 'mindmap') {
+    toast('重新整理心智圖大綱中…');
+    try {
+      item.mindmap = await generateListenMindmap(text);
+      item.updatedAt = now(); saveListen();
+      if (listenCurrentId === item.id) renderListenItem(item);
+      toast('心智圖大綱已重新整理');
+    } catch (e) { toast('重新整理心智圖失敗：' + e.message, true); }
+    return;
   } else return;
   const label = { summary: '大意', vocab: '重要單字', phrases: '重要片語', grammar: '重要文法' }[part];
   toast(`重新整理${label}中…`);
@@ -4580,11 +4659,17 @@ function renderListenItem(item) {
         ${exLine(g.example_en, g.example_start)}
       </div>`).join('') || '<p class="hint">—</p>';
     const regen = part => `<button class="btn ghost small ls-regen" data-lspart="${part}" title="重新生成這部分">↻</button>`;
+    const summaryBody = `<p>${item.summary ? esc(item.summary) : '<span class="hint">—</span>'}</p>`;
+    const mindBody = renderListenMindmap(item.mindmap);
     side.innerHTML = `
-      <div class="rd-summary"><div class="rd-sec-title">📌 大意 ${item.summary ? spkZh(item.summary) : ''} ${regen('summary')}</div><p>${item.summary ? esc(item.summary) : '<span class="hint">—</span>'}</p></div>
-      <div class="rd-section"><div class="rd-sec-title">🔑 重要單字 ${regen('vocab')}</div>${vocabHtml}</div>
-      <div class="rd-section"><div class="rd-sec-title">🧩 重要片語 ${regen('phrases')}</div>${phraseHtml}</div>
-      <div class="rd-section"><div class="rd-sec-title">🏗 重要文法 ${regen('grammar')}</div>${grammarHtml}</div>`;
+      <div class="rd-summary">
+        <div class="rd-sec-title">📌 大意 ${item.summary ? spkZh(item.summary) : ''} ${regen('summary')}</div>
+        ${summaryBody}
+      </div>
+      ${listenCollapseHtml('mindmap', `🧠 心智圖大綱 ${regen('mindmap')}`, mindBody)}
+      ${listenCollapseHtml('vocab', `🔑 重要單字 ${regen('vocab')}`, vocabHtml)}
+      ${listenCollapseHtml('phrases', `🧩 重要片語 ${regen('phrases')}`, phraseHtml)}
+      ${listenCollapseHtml('grammar', `🏗 重要文法 ${regen('grammar')}`, grammarHtml)}`;
   } else if (item.status !== 'error') {
     side.innerHTML = '<div class="ls-processing"><span class="spinner"></span> 整理重點中…</div>';
   } else {
@@ -4788,6 +4873,15 @@ function bindListen() {
     }
     const regen = e.target.closest('.ls-regen');
     if (regen) { const it = listenItems.find(i => i.id === listenCurrentId); if (it) relistenAnalyze(it, regen.dataset.lspart); return; }
+    const head = e.target.closest('.rd-collapse-head');
+    if (head) {
+      const box = head.closest('.rd-collapse');
+      if (box) {
+        box.classList.toggle('collapsed');
+        setListenCollapse(box.dataset.collapse, box.classList.contains('collapsed'));
+      }
+      return;
+    }
     const add = e.target.closest('.rd-add-vocab');
     if (add) openReaderAdd(add.dataset.word, add.dataset.ex);
   });
