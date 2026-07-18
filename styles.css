@@ -167,6 +167,7 @@ body {
 
 /* ===================== 版面 ===================== */
 .container { max-width: 1100px; margin: 0 auto; padding: 28px 24px 80px; }
+.container.wide { max-width: 1600px; }
 .view { display: none; animation: fade .2s ease; }
 .view.active { display: block; }
 @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }

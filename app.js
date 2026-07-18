@@ -740,6 +740,8 @@ function showView(name) {
   $$('.view').forEach(v => v.classList.remove('active'));
   $('#view-' + name).classList.add('active');
   $$('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+  // 閱讀／聽力頁需要更寬的版面（左右對照），其餘頁維持置中窄版
+  document.querySelector('.container')?.classList.toggle('wide', name === 'reader' || name === 'listen');
   if (name === 'add') currentEntry = null; // 進入新增頁預設不綁定任何已存卡片
   if (name === 'deck') { renderFolderSelects(); renderDailyPanel(); renderDeck(); }
   if (name === 'batch') renderBatch();
@@ -1001,8 +1003,8 @@ function endpointFor(key, model) {
 }
 
 // 單次請求（指定金鑰）
-async function requestGemini(key, body) {
-  const url = endpointFor(key, settings.model);
+async function requestGemini(key, body, model) {
+  const url = endpointFor(key, model || settings.model);
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -3202,7 +3204,7 @@ async function geminiGenerate(parts, cfg = {}) {
       const idx = keyIndex % keys.length; const key = keys[idx];
       keyIndex = (keyIndex + 1) % keys.length;
       try {
-        const data = await requestGemini(key, body);
+        const data = await requestGemini(key, body, cfg.model);
         const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
         if (!text) throw new Error('沒有回傳內容。');
         return text;
@@ -3233,12 +3235,14 @@ function parseLooseJSON(text) {
   return null;
 }
 
+// 閱讀／聽力的翻譯與重點分析走較快的模型（可在設定的模型清單挑選；預設 gemini-2.5-flash）
+const READER_FAST_MODEL = 'gemini-2.5-flash';
 async function readerJSON(prompt, schema, temperature, maxTokens) {
   const max = maxTokens || 8192;
   let lastErr;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const text = await geminiGenerate([{ text: prompt }], { schema, temperature, maxOutputTokens: max });
+      const text = await geminiGenerate([{ text: prompt }], { schema, temperature, maxOutputTokens: max, model: READER_FAST_MODEL });
       const obj = parseLooseJSON(text);
       if (obj && typeof obj === 'object') return obj;
       lastErr = new Error('無法解析回傳的 JSON。');
