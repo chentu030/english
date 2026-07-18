@@ -647,6 +647,7 @@ function init() {
   bindSettings();
   bindReader();
   bindListen();
+  bindSelAiPop();
   applyHideZh();
 
   // 回填設定畫面
@@ -3928,11 +3929,21 @@ function buildKnownWordRegex() {
   catch { return null; }
 }
 
-/** 文中標示：重要片語綠底線、重要單字綠底、詞庫單字黃底（可點擊跳右側） */
-function highlightArticleEn(raw, { vocab = [], phrases = [], knownRe = null } = {}) {
+/** 文中標示：重要片語綠底線、重要文法／句型綠虛線、重要單字綠底、詞庫單字黃底（可點擊跳右側） */
+function highlightArticleEn(raw, { vocab = [], phrases = [], grammar = [], patterns = [], knownRe = null } = {}) {
   const text = String(raw || '');
   if (!text) return '';
   const marks = [];
+  const pushMatches = (re, type, key) => {
+    let m;
+    while ((m = re.exec(text))) {
+      marks.push({
+        start: m.index, end: m.index + m[0].length, type, len: m[0].length,
+        key: String(key || '').toLowerCase(),
+      });
+      if (m[0].length === 0) re.lastIndex++;
+    }
+  };
   const addMarks = (list, type, getTerm) => {
     for (const item of list || []) {
       const term = String(getTerm(item) || '').trim();
@@ -3946,17 +3957,37 @@ function highlightArticleEn(raw, { vocab = [], phrases = [], knownRe = null } = 
           re = new RegExp(`\\b${escapeRegExp(term)}(?:s|es|ed|ing|d)?\\b`, 'gi');
         }
       } catch { continue; }
-      let m;
-      while ((m = re.exec(text))) {
-        marks.push({
-          start: m.index, end: m.index + m[0].length, type, len: m[0].length,
-          key: term.toLowerCase(),
-        });
-        if (m[0].length === 0) re.lastIndex++;
-      }
+      pushMatches(re, type, term);
+    }
+  };
+  /** 文法／句型：優先標英文結構本身，找不到再用原文例句 */
+  const addGrammarMarks = (list, getKey, getEx) => {
+    for (const item of list || []) {
+      const key = String(getKey(item) || '').trim();
+      if (!key) continue;
+      const seen = new Set();
+      const tryTerm = (term) => {
+        const t = String(term || '').trim();
+        if (t.length < 2 || t.length > 180) return;
+        const sig = t.toLowerCase();
+        if (seen.has(sig)) return;
+        seen.add(sig);
+        let pat = escapeRegExp(t).replace(/\s+/g, '\\s+');
+        // not only...but also 這類省略號允許中間有空隙
+        pat = pat.replace(/(?:\\\.){2,}/g, '[\\s\\S]{0,80}?');
+        try {
+          pushMatches(new RegExp(pat, 'gi'), 'grammar', key);
+        } catch { /* ignore bad pattern */ }
+      };
+      // 含足夠英文字母才當結構本身去比對（略過純中文標題）
+      if (/[A-Za-z]/.test(key) && (key.match(/[A-Za-z]/g) || []).length >= 2) tryTerm(key);
+      const ex = String(getEx(item) || '').trim();
+      if (ex) tryTerm(ex);
     }
   };
   addMarks(phrases, 'phrase', x => x.phrase);
+  addGrammarMarks(grammar, x => x.point, x => x.example_en);
+  addGrammarMarks(patterns, x => x.pattern, x => x.example_en);
   addMarks(vocab, 'vocab', x => x.word);
   marks.sort((a, b) => a.start - b.start || b.len - a.len);
   const picked = [];
@@ -3978,6 +4009,8 @@ function highlightArticleEn(raw, { vocab = [], phrases = [], knownRe = null } = 
     const keyAttr = attr(mk.key);
     if (mk.type === 'phrase') {
       html += `<mark class="rd-imp-phrase" data-imp-phrase="${keyAttr}" title="點擊跳到右側重要片語">${chunk}</mark>`;
+    } else if (mk.type === 'grammar') {
+      html += `<mark class="rd-imp-grammar" data-imp-grammar="${keyAttr}" title="點擊跳到右側重要文法／句型">${chunk}</mark>`;
     } else {
       html += `<mark class="rd-imp-word" data-imp-word="${keyAttr}" title="點擊跳到右側重要單字">${chunk}</mark>`;
     }
@@ -4243,6 +4276,26 @@ function scrollListenPhraseIntoView(phrase) {
     setCollapse: setListenCollapse,
   });
 }
+function scrollReaderPatternIntoView(pattern) {
+  scrollSidePanelItemIntoView({
+    sideSel: '#readerArticle .rd-aside',
+    listSel: '#rdPatternList',
+    attr: 'data-phrase',
+    value: pattern,
+    collapseKey: 'patterns',
+    setCollapse: setReaderCollapse,
+  });
+}
+function scrollListenGrammarIntoView(point) {
+  scrollSidePanelItemIntoView({
+    sideSel: '#listenSide',
+    listSel: '#lsGrammarList',
+    attr: 'data-phrase',
+    value: point,
+    collapseKey: 'grammar',
+    setCollapse: setListenCollapse,
+  });
+}
 
 function readerCollapseState() {
   try { return JSON.parse(localStorage.getItem('reader_collapse_v1') || '{}') || {}; }
@@ -4438,7 +4491,9 @@ function renderArticle(book, a) {
   if (a.mindmap) attachReaderMindmapPis(a);
 
   const paras = (a.paragraphs || []).map((p, i) => {
-    const en = highlightArticleEn(p.en || '', { vocab: a.vocab, phrases: a.phrases, knownRe: re });
+    const en = highlightArticleEn(p.en || '', {
+      vocab: a.vocab, phrases: a.phrases, patterns: a.patterns, knownRe: re,
+    });
     const paraHasAi = hasAiAudio && (a.audioCues || []).some(c => c.i === i);
     return `<div class="rd-para" data-pi="${i}">
       <p class="rd-en">${en}
@@ -4832,6 +4887,11 @@ function bindReader() {
     const impPhrase = e.target.closest('.rd-imp-phrase');
     if (impPhrase && e.target.closest('.rd-en, .rd-para')) {
       scrollReaderPhraseIntoView(impPhrase.dataset.impPhrase || plainEnText(impPhrase));
+      return;
+    }
+    const impGrammar = e.target.closest('.rd-imp-grammar');
+    if (impGrammar && e.target.closest('.rd-en, .rd-para')) {
+      scrollReaderPatternIntoView(impGrammar.dataset.impGrammar || plainEnText(impGrammar));
       return;
     }
     const impWord = e.target.closest('.rd-imp-word');
@@ -6097,7 +6157,7 @@ function renderListenItem(item) {
   if ((item.segments || []).length) {
     tr.innerHTML = item.segments.map((s, i) =>
       `<div class="ls-seg" data-i="${i}" data-start="${s.start}">
-        <span class="ls-time">${fmtTime(s.start)}</span><span class="ls-en">${highlightArticleEn(s.en, { vocab: item.vocab, phrases: item.phrases, knownRe: re })}</span>
+        <span class="ls-time">${fmtTime(s.start)}</span><span class="ls-en">${highlightArticleEn(s.en, { vocab: item.vocab, phrases: item.phrases, grammar: item.grammar, knownRe: re })}</span>
         ${s.zh ? `<div class="ls-zh">${esc(s.zh)}</div>` : ''}
       </div>`).join('');
   }
@@ -6320,6 +6380,11 @@ function bindListen() {
       scrollListenPhraseIntoView(impPhrase.dataset.impPhrase || plainEnText(impPhrase));
       return;
     }
+    const impGrammar = e.target.closest('.rd-imp-grammar');
+    if (impGrammar) {
+      scrollListenGrammarIntoView(impGrammar.dataset.impGrammar || plainEnText(impGrammar));
+      return;
+    }
     const impWord = e.target.closest('.rd-imp-word');
     if (impWord) {
       scrollListenVocabIntoView(impWord.dataset.impWord || plainEnText(impWord));
@@ -6419,6 +6484,144 @@ function bindListen() {
     it[field][idx][t.dataset.key] = t.value;
     it.updatedAt = now();
     saveListen();
+  });
+}
+
+/* ---------------------- 框選文字 → AI 提問小框 ---------------------- */
+const SEL_AI_PROMPTS = {
+  比較: (t) => `請簡短比較「${t}」與易混淆的相近用法（如近義詞／相近句型），點出差異與何時用哪個。用繁體中文，2–5 句。`,
+  解釋: (t) => `請簡短解釋「${t}」在此文中的意思與用法。用繁體中文，2–5 句。`,
+  翻譯: (t) => `請把「${t}」翻譯成自然繁體中文；若有歧義，附一句簡短說明。`,
+  舉例: (t) => `請用「${t}」舉 2–3 個簡短英文例句，每句附繁中譯。`,
+  造句: (t) => `請用「${t}」造 2 個實用英文句子，每句附繁中譯。`,
+};
+let selAiState = { text: '', context: '' };
+let selAiBusy = false;
+
+function hideSelAiPop() {
+  const pop = $('#selAiPop');
+  if (pop) pop.hidden = true;
+}
+
+function showSelAiPop(text, context, rect) {
+  const pop = $('#selAiPop');
+  if (!pop || !text) return;
+  selAiState = { text, context: context || '' };
+  const quote = $('#selAiQuote');
+  const ans = $('#selAiAns');
+  const input = $('#selAiInput');
+  if (quote) quote.textContent = text.length > 80 ? text.slice(0, 80) + '…' : text;
+  if (ans) { ans.hidden = true; ans.textContent = ''; }
+  if (input) input.value = '';
+  pop.hidden = false;
+  // 先顯示再量寬，避免跑出螢幕
+  const pad = 8;
+  const w = pop.offsetWidth || 300;
+  const h = pop.offsetHeight || 160;
+  let left = rect.left + rect.width / 2 - w / 2;
+  let top = rect.bottom + 8;
+  left = Math.max(pad, Math.min(left, window.innerWidth - w - pad));
+  if (top + h > window.innerHeight - pad) top = Math.max(pad, rect.top - h - 8);
+  pop.style.left = `${Math.round(left)}px`;
+  pop.style.top = `${Math.round(top)}px`;
+}
+
+function selectionInRoots() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+  let text = String(sel.toString() || '').replace(/\s+/g, ' ').trim();
+  if (!text || text.length > 400) return null;
+  const range = sel.getRangeAt(0);
+  const node = range.commonAncestorContainer;
+  const el = node.nodeType === 1 ? node : node.parentElement;
+  if (!el) return null;
+  const roots = [
+    document.querySelector('#readerArticle .rd-main'),
+    document.getElementById('listenTranscript'),
+  ].filter(Boolean);
+  const root = roots.find(r => r.contains(el));
+  if (!root) return null;
+  // 不要在按鈕、輸入框裡觸發
+  if (el.closest('button, input, textarea, select, .sel-ai-pop, .rd-aside, .listen-side')) return null;
+  const block = el.closest('.rd-para, .ls-seg, .rd-en, .ls-en') || el;
+  const context = plainEnText(block).slice(0, 600);
+  return { text, context, range };
+}
+
+async function askSelAi(question) {
+  const pop = $('#selAiPop');
+  const ans = $('#selAiAns');
+  if (!pop || !ans || selAiBusy) return;
+  const { text, context } = selAiState;
+  if (!text) return;
+  const q = String(question || '').trim();
+  if (!q) { toast('請先輸入問題或點快捷', true); return; }
+  selAiBusy = true;
+  ans.hidden = false;
+  ans.innerHTML = '<span class="spinner"></span> 思考中…';
+  try {
+    const prompt = `你是英語家教，回答要精簡實用。\n使用者圈選：「${text}」\n上下文：${context || '（無）'}\n任務：${q}\n用繁體中文回答；英文例句可保留英文。不要開場白、不要列一堆無關選項。`;
+    const reply = await geminiGenerate([{ text: prompt }], {
+      temperature: 0.4,
+      maxOutputTokens: 640,
+      model: READER_FAST_MODEL,
+    });
+    ans.textContent = String(reply || '').trim() || '（沒有回覆）';
+  } catch (e) {
+    ans.textContent = `失敗：${e.message || e}`;
+  } finally {
+    selAiBusy = false;
+  }
+}
+
+function bindSelAiPop() {
+  const pop = $('#selAiPop');
+  if (!pop) return;
+
+  // 在小框上 mousedown 避免清掉選取／立刻關閉
+  pop.addEventListener('mousedown', e => e.preventDefault());
+
+  document.addEventListener('mouseup', e => {
+    if (e.target.closest('#selAiPop')) return;
+    // 等瀏覽器完成選取
+    setTimeout(() => {
+      const hit = selectionInRoots();
+      if (hit) {
+        const rect = hit.range.getBoundingClientRect();
+        if (rect.width || rect.height) showSelAiPop(hit.text, hit.context, rect);
+        else hideSelAiPop();
+      } else if (!e.target.closest('#selAiPop')) {
+        hideSelAiPop();
+      }
+    }, 10);
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') hideSelAiPop();
+  });
+  document.addEventListener('scroll', () => hideSelAiPop(), true);
+
+  pop.addEventListener('click', e => {
+    const chip = e.target.closest('[data-sel-chip]');
+    if (chip) {
+      const kind = chip.dataset.selChip;
+      const mk = SEL_AI_PROMPTS[kind];
+      askSelAi(mk ? mk(selAiState.text) : kind);
+      return;
+    }
+    if (e.target.closest('#selAiAsk')) {
+      askSelAi($('#selAiInput')?.value || '');
+      return;
+    }
+    if (e.target.closest('#selAiClose')) {
+      hideSelAiPop();
+    }
+  });
+  $('#selAiInput')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.isComposing) {
+      e.preventDefault();
+      askSelAi($('#selAiInput')?.value || '');
+    }
   });
 }
 

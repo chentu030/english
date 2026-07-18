@@ -514,6 +514,25 @@
     </div>
   </div>
 
+  <div id="selAiPop" class="sel-ai-pop" hidden>
+    <div class="sel-ai-head">
+      <div class="sel-ai-quote" id="selAiQuote"></div>
+      <button type="button" class="sel-ai-close" id="selAiClose" title="關閉">✕</button>
+    </div>
+    <div class="sel-ai-chips">
+      <button type="button" data-sel-chip="比較">比較</button>
+      <button type="button" data-sel-chip="解釋">解釋</button>
+      <button type="button" data-sel-chip="翻譯">翻譯</button>
+      <button type="button" data-sel-chip="舉例">舉例</button>
+      <button type="button" data-sel-chip="造句">造句</button>
+    </div>
+    <div class="sel-ai-row">
+      <input id="selAiInput" type="text" placeholder="問一個問題…" autocomplete="off" />
+      <button type="button" class="btn primary small" id="selAiAsk">問</button>
+    </div>
+    <div class="sel-ai-ans" id="selAiAns" hidden></div>
+  </div>
+
   <div id="toast" class="toast" hidden></div>
 
   <!-- PDF.js：解析上傳的 PDF 文字（閱讀頁用） -->
