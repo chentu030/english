@@ -543,17 +543,23 @@ function exampleSentencesOf(d) {
   return arr;
 }
 const TARGET_LANG = () => L().speech.def;
-// 切到新卡：自動念單字＋中文解釋（克漏字則念整句）
+// 切到新卡：只念「題面」可見內容，不要先把答案唸出來
 function autoSpeakFront(d, mode) {
   if (mode === 'spelling') {
+    // 克漏字：聽整句拼單字（句子本身含答案字，屬題目設計）
     const sent = clozeSentence(d);
-    speakSequence([{ text: sent ? sent.en : d.word, lang: TARGET_LANG() },
-      { text: sent ? sent.zh : '', lang: ZH_LANG }]);
+    speakSequence([{ text: sent ? sent.en : d.word, lang: TARGET_LANG() }]);
     return;
   }
-  speakSequence([{ text: d.word, lang: TARGET_LANG() }, { text: zhExplanationOf(d), lang: ZH_LANG }]);
+  if (mode === 'zh2en') {
+    const zh = zhExplanationOf(d);
+    if (zh) speakSequence([{ text: zh, lang: ZH_LANG }]);
+    return;
+  }
+  // en2zh 及其他「看外文回想…」：只先念單字
+  if (d.word) speakSequence([{ text: d.word, lang: TARGET_LANG() }]);
 }
-// 顯示答案：念單字＋中文解釋＋所有例句
+// 顯示答案後：念單字＋中文解釋＋例句
 function autoSpeakBack(d) {
   const items = [{ text: d.word, lang: TARGET_LANG() }, { text: zhExplanationOf(d), lang: ZH_LANG }];
   exampleSentencesOf(d).forEach(s => items.push({ text: s, lang: TARGET_LANG() }));
