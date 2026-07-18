@@ -4185,6 +4185,10 @@ function pumpListenJobQueue() {
 function enqueueListenFiles(fileList) {
   const files = [...(fileList || [])].filter(Boolean);
   if (!files.length) return;
+  if (files.length === 1) {
+    listenUploadFile(files[0], { open: true, quiet: false });
+    return;
+  }
   files.forEach(f => listenJobQueue.push({ type: 'file', file: f }));
   toast(`已加入 ${files.length} 個檔案到批次佇列`);
   pumpListenJobQueue();
@@ -4192,6 +4196,10 @@ function enqueueListenFiles(fileList) {
 function enqueueListenYoutubeUrls(urls, opts = {}) {
   const list = [...new Set((urls || []).map(u => String(u || '').trim()).filter(Boolean))];
   if (!list.length) return;
+  if (list.length === 1) {
+    listenAddYoutube(list[0], { ...opts, open: true, quiet: false });
+    return;
+  }
   list.forEach(url => listenJobQueue.push({ type: 'youtube', url, opts: { ...opts } }));
   toast(`已加入 ${list.length} 個 YouTube 到批次佇列`);
   pumpListenJobQueue();
