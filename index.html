@@ -40,6 +40,7 @@
       <button class="nav-btn" data-view="add">新增單字</button>
       <button class="nav-btn" data-view="batch">批次</button>
       <button class="nav-btn" data-view="study">背誦</button>
+      <button class="nav-btn" data-view="reader">閱讀</button>
       <button class="nav-btn" data-view="settings">設定</button>
     </nav>
     <div id="langSwitch" class="lang-switch" title="切換學習語言（各語言資料分開）"></div>
@@ -82,14 +83,16 @@
           <button class="btn ghost" id="renameFolderBtn" title="重新命名目前選取的資料夾">✏️ 改名</button>
           <button class="btn ghost" id="starFilterBtn" title="只看星號單字">⭐ 星號</button>
           <button class="btn ghost" id="selectModeBtn">☑ 選取</button>
-          <button class="btn primary" data-view="study" id="quickStudyBtn">開始背誦 →</button>
         </div>
       </div>
-      <div id="selectBar" class="select-bar" hidden>
-        <label class="sb-all"><input type="checkbox" id="selectAll" /> 全選</label>
-        <span id="selectCount" class="sb-count">已選 0</span>
-        <select id="moveFolder" class="deck-select" title="移動到資料夾"><option value="">移動到…</option></select>
-        <button class="btn ghost" id="selectCancelBtn">取消</button>
+      <div id="selectBar" class="select-bar">
+        <button class="btn primary" data-view="study" id="quickStudyBtn">開始背誦 →</button>
+        <div id="selectControls" class="select-controls" hidden>
+          <label class="sb-all"><input type="checkbox" id="selectAll" /> 全選</label>
+          <span id="selectCount" class="sb-count">已選 0</span>
+          <select id="moveFolder" class="deck-select" title="移動到資料夾"><option value="">移動到…</option></select>
+          <button class="btn ghost" id="selectCancelBtn">取消</button>
+        </div>
       </div>
       <div id="deckList" class="deck-list"></div>
       <div id="deckEmpty" class="empty-state">
@@ -239,6 +242,51 @@
       </div>
     </section>
 
+    <!-- ===================== 閱讀（PDF / 文章精讀） ===================== -->
+    <section id="view-reader" class="view">
+      <!-- 書架（書單列表） -->
+      <div id="readerLibrary" class="reader-library">
+        <div class="reader-lib-head">
+          <h2>📚 我的書架</h2>
+          <div class="reader-lib-actions">
+            <label class="btn primary file-btn">
+              ＋ 上傳 PDF
+              <input type="file" id="readerPdfFile" accept="application/pdf" hidden />
+            </label>
+            <label class="btn ghost file-btn">
+              🖼 截圖／圖片
+              <input type="file" id="readerImgFile" accept="image/*" hidden />
+            </label>
+            <button class="btn ghost" id="readerPasteBtn">✍️ 貼上文字新增</button>
+          </div>
+        </div>
+        <p class="hint" id="readerLibHint">上傳一份 PDF（例如 The Economist），AI 會幫你整理目錄；點任一篇文章即可精讀（重要單字／片語／句型、逐段中英對照、段落大意、朗讀，並把你背過且出現的單字用螢光筆標出）。</p>
+        <div id="readerBookList" class="reader-book-list"></div>
+      </div>
+
+      <!-- 書本內容（目錄 + 文章） -->
+      <div id="readerBook" class="reader-book" hidden>
+        <div class="reader-book-bar">
+          <button class="btn ghost small" id="readerBackToLib">← 書架</button>
+          <h2 id="readerBookTitle" class="reader-book-title"></h2>
+          <div class="reader-book-tools">
+            <button class="btn ghost small" id="readerRenameBook">✏️ 改名</button>
+            <button class="btn danger small" id="readerDeleteBook">🗑 刪除</button>
+          </div>
+        </div>
+
+        <div class="reader-split">
+          <!-- 目錄 -->
+          <aside class="reader-toc" id="readerToc"></aside>
+
+          <!-- 文章閱讀區 -->
+          <div class="reader-article" id="readerArticle">
+            <div class="empty-state small"><p class="empty-sub">從左側目錄點一篇文章開始精讀。</p></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ===================== 設定 ===================== -->
     <section id="view-settings" class="view">
       <h2>設定</h2>
@@ -306,8 +354,44 @@
     </div>
   </div>
 
+  <!-- ===================== 加入詞庫彈窗（閱讀頁用） ===================== -->
+  <div id="readerAddModal" class="modal" hidden>
+    <div class="modal-overlay" data-close-radd></div>
+    <div class="modal-box" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <span class="modal-title">加入詞庫</span>
+        <div class="modal-actions">
+          <button class="modal-close" id="raddCloseBtn" title="關閉" data-close-radd>✕</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <label class="field">
+          <span class="field-label">單字 <em>*</em></span>
+          <input type="text" id="raddWord" autocomplete="off" />
+        </label>
+        <label class="field">
+          <span class="field-label">貼上歐路詞典內容（可留空讓 AI 自行整理，貼上更完整）</span>
+          <textarea id="raddRaw" rows="8" placeholder="把歐路詞典整段貼上，讓整理更完整。也可以留空。"></textarea>
+        </label>
+        <p class="hint" id="raddExample"></p>
+        <div class="add-btns">
+          <button class="btn primary" id="raddGenBtn">🤖 整理並加入詞庫</button>
+          <button class="btn ghost" data-close-radd>取消</button>
+        </div>
+        <div id="raddStatus" class="gen-status" hidden></div>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" hidden></div>
 
+  <!-- PDF.js：解析上傳的 PDF 文字（閱讀頁用） -->
+  <script type="module">
+    import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.min.mjs';
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.mjs';
+    window.pdfjsLib = pdfjsLib;
+    window.dispatchEvent(new Event('pdfjs-ready'));
+  </script>
   <!-- 本機私密設定（部署後不存在，會被忽略） -->
   <script src="config.local.js" onerror="this.remove()"></script>
   <!-- Firebase / Firestore 雲端同步 -->

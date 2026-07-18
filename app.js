@@ -15,6 +15,7 @@ const LS_FOLDERS = 'vocab_folders_v1';
 const LS_DAILY = 'vocab_daily_v1';
 const LS_DAILY_HIST = 'vocab_daily_hist_v1'; // { 'YYYY-MM-DD': 翻閱張數 }
 const LS_LANG = 'vocab_lang_v1';
+const LS_READER = 'vocab_reader_v1'; // 閱讀書架（每語言、每使用者分開）
 
 // 計入每日目標的模式（中英、克漏字為主）
 const DAILY_MODES = ['en2zh', 'zh2en', 'spelling'];
@@ -466,6 +467,7 @@ function init() {
   bindStudySetup();
   bindStudyControls();
   bindSettings();
+  bindReader();
 
   // 回填設定畫面
   $('#apiKeysInput').value = (settings.apiKeys || []).join('\n');
@@ -566,6 +568,8 @@ function loadUserLocalData() {
   if (!Array.isArray(daily.countedIds)) daily.countedIds = [];
   rolloverDaily();
   migrateCards();
+  readerBooks = loadJSON(nsKey(LS_READER), []);
+  readerSyncedLang = null;
 }
 
 // 把舊的共用資料（Firestore 頂層集合 + 本機舊 key）搬到 users/{uid} 底下
@@ -734,6 +738,7 @@ function showView(name) {
   if (name === 'deck') { renderFolderSelects(); renderDailyPanel(); renderDeck(); }
   if (name === 'batch') renderBatch();
   if (name === 'study') { renderModeGrid(); renderFolderSelects(); resetStudyToSetup(); }
+  if (name === 'reader') openReader();
 }
 
 function bindNav() {
@@ -831,6 +836,11 @@ function switchLang(lang) {
   // 重新訂閱該語言的雲端集合
   startCloud();
   syncHistory();
+  // 閱讀書架也換語言
+  readerBooks = loadJSON(nsKey(LS_READER), []);
+  readerSyncedLang = null;
+  readerCurrentBookId = null; readerCurrentTocId = null;
+  if (document.querySelector('#view-reader')?.classList.contains('active')) openReader();
   toast(`已切換到${L().label}`);
 }
 
@@ -1140,8 +1150,9 @@ async function regenerateSegment(segKey, btn) {
     Object.assign(data, part);
     if (currentEntry.onChange) currentEntry.onChange();
     if (currentEntry.card) cloudUpsert(currentEntry.card);
-    // 重新渲染（保留可編輯狀態）
-    renderPreview(data, container, { editable: true, word, raw, onChange: currentEntry.onChange, card: currentEntry.card });
+    // 重新渲染（依當前檢視型態：欄位編輯器或預覽）
+    if (currentEntry.rerender) currentEntry.rerender();
+    else renderPreview(data, container, { editable: true, word, raw, onChange: currentEntry.onChange, card: currentEntry.card });
     toast('已重新生成此段');
   } catch (err) {
     btn.disabled = false;
@@ -1340,7 +1351,10 @@ let currentEntry = null; // { data, container, word, raw, onChange }
 function renderPreview(d, container, ctx) {
   const editable = !!(ctx && ctx.editable);
   container.oninput = null; container.onclick = null; container._onDone = null; // 清掉編輯器殘留的處理器
-  if (editable) currentEntry = { data: d, container, word: ctx.word || d.word, raw: ctx.raw || '', onChange: ctx.onChange, card: ctx.card || null };
+  if (editable) {
+    currentEntry = { data: d, container, word: ctx.word || d.word, raw: ctx.raw || '', onChange: ctx.onChange, card: ctx.card || null };
+    currentEntry.rerender = () => { container.innerHTML = buildEntryHtml(d, true); };
+  }
   container.innerHTML = buildEntryHtml(d, editable);
 }
 
@@ -1421,14 +1435,25 @@ function buildEntryHtml(d, editable) {
 function openCardEditor() {
   if (!currentEntry) return;
   const { data, container } = currentEntry;
+  const onChangeCb = () => {
+    if (currentEntry.onChange) currentEntry.onChange();     // 存 localStorage（已存卡會 saveCards）
+    if (currentEntry.card) debouncedCloudSave(currentEntry.card);
+  };
   container._onDone = () => renderPreview(data, container, {
     editable: true, word: data.word, raw: currentEntry.raw,
     onChange: currentEntry.onChange, card: currentEntry.card,
   });
-  renderEditor(data, container, () => {
-    if (currentEntry.onChange) currentEntry.onChange();     // 存 localStorage（已存卡會 saveCards）
-    if (currentEntry.card) debouncedCloudSave(currentEntry.card);
-  });
+  currentEntry.rerender = () => renderEditor(data, container, onChangeCb);
+  renderEditor(data, container, onChangeCb);
+}
+
+// 直接在容器內開啟「欄位編輯器」（用於詞庫彈窗直接編輯：一鍵可編輯＋可重新生成）
+function openCardFieldEditor(container, card, onDone) {
+  const onChangeCb = () => { saveCards(); debouncedCloudSave(card); };
+  currentEntry = { data: card.data, container, word: card.data.word, raw: card.raw || '', onChange: () => saveCards(), card };
+  currentEntry.rerender = () => renderEditor(card.data, container, onChangeCb);
+  container._onDone = onDone || null;
+  renderEditor(card.data, container, onChangeCb);
 }
 
 /* =========================================================================
@@ -1452,9 +1477,17 @@ const ARRAY_FIELDS = {
 
 function attr(v) { return esc(v ?? ''); }
 
+// 欄位群組 → 對應可重新生成的段落（seg）
+const FIELD_SEG = {
+  definitions: 'base', mnemonics: 'memory', collocations: 'collocation',
+  synonyms: 'relation', word_forms: 'forms', examples: 'examples',
+};
+
 function renderEditor(data, container, onChange) {
   const arrGroup = (field) => {
     const cfg = ARRAY_FIELDS[field];
+    const seg = FIELD_SEG[field];
+    const regenBtn = seg ? `<button class="seg-regen" data-seg="${seg}" title="用 AI 重新生成此段">↻ 重新生成</button>` : '';
     const rows = (data[field] || []).map((item, i) => {
       const cells = cfg.cols.map(([k, label]) =>
         `<label class="ed-cell"><span>${label}</span><input class="ed-input" data-arr="${field}" data-idx="${i}" data-key="${k}" value="${attr(item[k])}" /></label>`
@@ -1465,7 +1498,7 @@ function renderEditor(data, container, onChange) {
       </div>`;
     }).join('');
     return `<div class="ed-group">
-      <div class="ed-title">${cfg.title}</div>
+      <div class="ed-title"><span>${cfg.title}</span>${regenBtn}</div>
       ${rows}
       <button class="ed-add" data-add="${field}">＋ 新增一列</button>
     </div>`;
@@ -1751,8 +1784,8 @@ function bindDeckControls() {
 function setSelectMode(on) {
   selectMode = on;
   selectedIds.clear();
-  const bar = $('#selectBar');
-  if (bar) bar.hidden = !on;
+  const ctrls = $('#selectControls');
+  if (ctrls) ctrls.hidden = !on;
   const btn = $('#selectModeBtn');
   if (btn) btn.classList.toggle('active', on);
   renderDeck();
@@ -2008,15 +2041,13 @@ function bindCardModal() {
       setModalReadonly(c);
       renderDeck();
     } else {
-      renderPreview(c.data, $('#modalBody'), {
-        editable: true, word: c.data.word, raw: c.raw || '',
-        onChange: () => saveCards(), card: c,
-      });
+      // 直接進入「欄位編輯器」：每個欄位都能改，且各段可重新生成
+      openCardFieldEditor($('#modalBody'), c, () => { setModalReadonly(c); renderDeck(); });
       btn.textContent = '✓ 完成'; btn.dataset.editing = '1';
       $('#modalBody').scrollTop = 0;
     }
   });
-  // 彈窗內：各段重新生成／手動編輯整張卡
+  // 彈窗內：各段重新生成（欄位編輯器與預覽皆適用）／手動編輯整張卡
   $('#modalBody').addEventListener('click', e => {
     const regen = e.target.closest('.seg-regen');
     if (regen) { regenerateSegment(regen.dataset.seg, regen); return; }
@@ -2659,6 +2690,560 @@ function bindSettings() {
       renderDeck();
       toast('已清空所有單字');
     }
+  });
+}
+
+/* =========================================================================
+   閱讀（PDF / 文章精讀）
+   資料模型：
+   book = { id, title, createdAt, updatedAt, kind:'pdf'|'text',
+            pages:[string], toc:[{id,title,page,section,done}], articles:{ [tocId]: article } }
+   article = { tocId, title, body, paragraphs:[{en,zh}], summary,
+               vocab:[{word,meaning_zh,example_en,example_zh}],
+               phrases:[{phrase,meaning_zh}], patterns:[{pattern,explain_zh,example_en}],
+               processedAt }
+   pages 只存本機（供之後處理未整理文章）；雲端只存已處理內容（避免超過文件大小上限）。
+   ========================================================================= */
+let readerBooks = [];
+let readerCurrentBookId = null;
+let readerCurrentTocId = null;
+let readerSyncedLang = null;
+
+function readerLangKey() { return `reader_${currentLang}`; }
+function saveReaderLocal() { localStorage.setItem(nsKey(LS_READER), JSON.stringify(readerBooks)); }
+let readerCloudTimer = null;
+function saveReaderCloud() {
+  if (!currentUid || !(window.Cloud && window.Cloud.enabled && window.Cloud.saveMeta)) return;
+  clearTimeout(readerCloudTimer);
+  readerCloudTimer = setTimeout(() => {
+    // 雲端不存 pages（可能很大且含 undefined），只存目錄與已處理文章
+    const slim = readerBooks.map(b => { const { pages, ...rest } = b; return rest; });
+    window.Cloud.saveMeta(readerLangKey(), { books: slim });
+  }, 1500);
+}
+function saveReader() { saveReaderLocal(); saveReaderCloud(); }
+
+async function syncReaderFromCloud() {
+  if (readerSyncedLang === currentLang) return;
+  readerSyncedLang = currentLang;
+  if (!currentUid || !(window.Cloud && window.Cloud.enabled && window.Cloud.loadMeta)) return;
+  try {
+    const meta = await window.Cloud.loadMeta(readerLangKey());
+    if (meta && Array.isArray(meta.books)) {
+      const map = new Map();
+      readerBooks.forEach(b => map.set(b.id, b));
+      meta.books.forEach(cb => {
+        const ex = map.get(cb.id);
+        if (!ex) { map.set(cb.id, cb); return; }
+        // 合併：保留本機 pages，其餘取較新
+        const merged = ((cb.updatedAt || 0) >= (ex.updatedAt || 0)) ? { ...ex, ...cb } : { ...cb, ...ex };
+        merged.pages = ex.pages || cb.pages;
+        map.set(cb.id, merged);
+      });
+      readerBooks = Array.from(map.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      saveReaderLocal();
+      renderReader();
+    }
+  } catch (e) { console.error('讀取閱讀雲端資料失敗', e); }
+}
+
+function openReader() {
+  readerBooks = loadJSON(nsKey(LS_READER), []);
+  renderReader();
+  syncReaderFromCloud();
+}
+
+function renderReader() {
+  const book = readerBooks.find(b => b.id === readerCurrentBookId);
+  const lib = $('#readerLibrary');
+  const bk = $('#readerBook');
+  if (!lib || !bk) return;
+  if (book) {
+    lib.hidden = true; bk.hidden = false;
+    renderBook(book);
+  } else {
+    lib.hidden = false; bk.hidden = true;
+    renderBookList();
+  }
+}
+
+function renderBookList() {
+  const el = $('#readerBookList');
+  if (!el) return;
+  if (!readerBooks.length) {
+    el.innerHTML = '<div class="empty-state small"><p class="empty-sub">還沒有任何書。上傳一份 PDF 或貼上文章開始。</p></div>';
+    return;
+  }
+  el.innerHTML = readerBooks.map(b => {
+    const total = (b.toc || []).length;
+    const done = (b.toc || []).filter(t => b.articles && b.articles[t.id]).length;
+    const d = new Date(b.createdAt || Date.now());
+    const ds = `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+    return `<button class="reader-book-card" data-book="${b.id}">
+      <span class="rbc-icon">${b.kind === 'text' ? '📝' : '📕'}</span>
+      <span class="rbc-info">
+        <span class="rbc-title">${esc(b.title)}</span>
+        <span class="rbc-sub">${total} 篇文章 · 已整理 ${done} · ${ds}</span>
+      </span>
+    </button>`;
+  }).join('');
+}
+
+function renderBook(book) {
+  $('#readerBookTitle').textContent = book.title;
+  const toc = $('#readerToc');
+  if ((book.toc || []).length === 0) {
+    toc.innerHTML = '<p class="hint" style="padding:10px">目錄整理中或無目錄…</p>';
+  } else {
+    toc.innerHTML = `<div class="rd-toc-head">目錄（${book.toc.length}）</div>` + book.toc.map(t => {
+      const processed = book.articles && book.articles[t.id];
+      const active = t.id === readerCurrentTocId ? ' active' : '';
+      return `<button class="rd-toc-item${active}" data-toc="${t.id}">
+        <span class="rd-toc-title">${esc(t.title)}</span>
+        ${t.section ? `<span class="rd-toc-sec">${esc(t.section)}</span>` : ''}
+        <span class="rd-toc-flag">${processed ? '✅' : (t.page ? 'p.' + t.page : '')}</span>
+      </button>`;
+    }).join('');
+  }
+  // 文章區
+  const art = $('#readerArticle');
+  if (readerCurrentTocId && book.articles && book.articles[readerCurrentTocId]) {
+    renderArticle(book, book.articles[readerCurrentTocId]);
+  } else if (!readerCurrentTocId) {
+    art.innerHTML = '<div class="empty-state small"><p class="empty-sub">從左側目錄點一篇文章開始精讀。</p></div>';
+  }
+}
+
+/* ---------- 上傳 / 建立書本 ---------- */
+async function readerAddPdf(file) {
+  if (!file) return;
+  if (!window.pdfjsLib) { toast('PDF 引擎尚未載入，請稍候再試', true); return; }
+  const hint = $('#readerLibHint');
+  const setHint = (t) => { if (hint) hint.textContent = t; };
+  try {
+    setHint('讀取 PDF 中…');
+    const pages = await readerParsePdf(file, (p, n) => setHint(`解析 PDF 第 ${p}/${n} 頁…`));
+    setHint('AI 整理目錄中…');
+    const title = file.name.replace(/\.pdf$/i, '');
+    const book = { id: uid(), title, createdAt: now(), updatedAt: now(), kind: 'pdf', pages, toc: [], articles: {} };
+    readerBooks.unshift(book);
+    book.toc = await readerBuildToc(pages);
+    saveReader();
+    readerCurrentBookId = book.id; readerCurrentTocId = null;
+    renderReader();
+    setHint('完成！點左側目錄任一篇開始精讀。');
+    toast(`已加入《${title}》，共 ${book.toc.length} 篇`);
+  } catch (e) {
+    console.error(e);
+    setHint('');
+    toast('處理 PDF 失敗：' + e.message, true);
+  }
+}
+
+async function readerParsePdf(file, onProgress) {
+  const buf = await file.arrayBuffer();
+  const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+  const pages = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    if (onProgress) onProgress(i, pdf.numPages);
+    const page = await pdf.getPage(i);
+    const tc = await page.getTextContent();
+    const text = tc.items.map(it => it.str).join(' ').replace(/\s+/g, ' ').trim();
+    pages.push(text);
+  }
+  return pages;
+}
+
+async function readerBuildToc(pages) {
+  // 取前段文字（含頁碼標記）給 AI 抓目錄
+  let sample = ''; const LIMIT = 26000;
+  for (let i = 0; i < pages.length && sample.length < LIMIT; i++) {
+    sample += `\n[P${i + 1}] ${pages[i]}`;
+  }
+  sample = sample.slice(0, LIMIT);
+  const schema = {
+    type: 'object', properties: {
+      entries: {
+        type: 'array', items: {
+          type: 'object', properties: {
+            title: { type: 'string' }, section: { type: 'string' }, page: { type: 'integer' },
+          }, required: ['title'],
+        },
+      },
+    }, required: ['entries'],
+  };
+  const prompt = `以下是一本雜誌／刊物前段的文字（[P#] 為 PDF 頁碼）。請萃取這本刊物的「文章目錄」：\n- 列出每一篇實際文章的標題(title)、所屬版塊或專欄名稱(section)、以及起始頁碼(page，用最接近的 [P#] 數字)。\n- 略過廣告、版權頁、訂閱資訊等非文章內容。\n- 標題請用原文（英文）。\n只輸出 JSON。\n\n文字：\n${sample}`;
+  try {
+    const out = await readerJSON(prompt, schema, 0.3);
+    const entries = (out.entries || []).filter(e => e.title && e.title.trim());
+    return entries.map(e => ({ id: uid(), title: e.title.trim(), section: (e.section || '').trim(), page: e.page || 0, done: false }));
+  } catch (e) {
+    console.error('目錄整理失敗', e);
+    return [];
+  }
+}
+
+function readerAddText(title, text) {
+  const book = {
+    id: uid(), title: title || '未命名文章', createdAt: now(), updatedAt: now(), kind: 'text',
+    pages: [text], toc: [{ id: uid(), title: title || '未命名文章', section: '', page: 1, done: false }], articles: {},
+  };
+  readerBooks.unshift(book);
+  saveReader();
+  readerCurrentBookId = book.id;
+  readerCurrentTocId = book.toc[0].id;
+  renderReader();
+  openArticle(book, book.toc[0]);
+}
+
+/* ---------- 文章精讀處理 ---------- */
+function readerFullText(book) {
+  if (!book.pages || !book.pages.length) return '';
+  return book.pages.map((t, i) => `[P${i + 1}] ${t}`).join('\n');
+}
+function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function readerArticleWindow(book, toc) {
+  const full = readerFullText(book);
+  if (!full) return '';
+  if (book.kind === 'text') return full.replace(/\[P\d+\]\s*/g, '');
+  const words = (toc.title || '').toLowerCase().split(/\s+/).filter(Boolean).slice(0, 8).map(escapeRegExp);
+  let idx = -1;
+  if (words.length) {
+    try { const re = new RegExp(words.join('\\W+'), 'i'); const m = re.exec(full); if (m) idx = m.index; } catch {}
+  }
+  if (idx < 0) return full.slice(0, 14000);
+  return full.slice(Math.max(0, idx - 200), idx + 11000);
+}
+
+function chunkByWords(text, maxWords) {
+  const paras = text.split(/\n{1,}|(?<=[.!?])\s{2,}/).map(s => s.trim()).filter(Boolean);
+  const chunks = []; let cur = '', curW = 0;
+  for (const p of paras) {
+    const w = p.split(/\s+/).length;
+    if (curW + w > maxWords && cur) { chunks.push(cur); cur = ''; curW = 0; }
+    cur += (cur ? '\n' : '') + p; curW += w;
+  }
+  if (cur) chunks.push(cur);
+  return chunks.length ? chunks : [text];
+}
+
+async function processArticle(book, toc) {
+  const art = $('#readerArticle');
+  const status = (t) => { art.innerHTML = `<div class="rd-processing"><span class="spinner"></span> ${esc(t)}</div>`; };
+  status('擷取文章正文中…');
+  const win = readerArticleWindow(book, toc);
+  if (!win) {
+    art.innerHTML = '<div class="empty-state small"><p class="empty-sub">這本書的原始內容不在此裝置（雲端不保存 PDF 原文）。請重新上傳同一份 PDF 即可處理未整理的文章。</p></div>';
+    return;
+  }
+
+  // 1) 用 AI 清出乾淨正文
+  let body = win;
+  try {
+    const cleanSchema = { type: 'object', properties: { article: { type: 'string' } }, required: ['article'] };
+    const cleanPrompt = `以下文字擷取自 PDF，可能夾雜頁碼標記[P#]、頁首頁尾、廣告或其他文章。請找出標題約為「${toc.title}」的那篇文章，輸出它的完整正文：\n- 合併被硬斷的行、還原自然段落（段落之間用換行分隔）。\n- 移除頁碼標記、頁首頁尾、圖說、廣告與其他文章。\n- 不要翻譯、不要加入任何說明，只輸出正文文字。\n\n文字：\n${win}`;
+    const cj = await readerJSON(cleanPrompt, cleanSchema, 0.2);
+    if (cj.article && cj.article.trim().length > 40) body = cj.article.trim();
+  } catch (e) { console.error('正文清理失敗，改用原始擷取', e); }
+
+  // 2) 逐段中英對照（分塊翻譯）＋ 3) 重要單字/片語/句型 ＋ 4) 大意，平行處理
+  status('AI 翻譯與精讀分析中…（重要單字、片語、句型、逐段對照、大意）');
+  const chunks = chunkByWords(body, 850);
+  const transSchema = {
+    type: 'object', properties: {
+      paragraphs: { type: 'array', items: { type: 'object', properties: { en: { type: 'string' }, zh: { type: 'string' } }, required: ['en', 'zh'] } },
+    }, required: ['paragraphs'],
+  };
+  const transTasks = chunks.map(ch => readerJSON(
+    `把以下英文文章片段分成自然段落，輸出每一段的原文(en)與對應的繁體中文翻譯(zh)。保持順序、勿省略、勿加入說明。\n\n${ch}`,
+    transSchema, 0.3,
+  ).then(r => r.paragraphs || []).catch(() => [{ en: ch, zh: '（此段翻譯失敗）' }]));
+
+  const vocabSchema = {
+    type: 'object', properties: {
+      vocab: { type: 'array', items: { type: 'object', properties: { word: { type: 'string' }, meaning_zh: { type: 'string' }, example_en: { type: 'string' }, example_zh: { type: 'string' } }, required: ['word'] } },
+      phrases: { type: 'array', items: { type: 'object', properties: { phrase: { type: 'string' }, meaning_zh: { type: 'string' } }, required: ['phrase'] } },
+      patterns: { type: 'array', items: { type: 'object', properties: { pattern: { type: 'string' }, explain_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['pattern'] } },
+    },
+  };
+  const vocabTask = readerJSON(
+    `你是英語精讀老師。從以下文章挑出對進階學習者最有價值的內容，用繁體中文說明：\n- vocab：10–15 個重要單字，每個給中文意思(meaning_zh)、一個例句(example_en，優先取自文章)與例句中譯(example_zh)。\n- phrases：5–10 個重要片語／搭配，附中文(meaning_zh)。\n- patterns：3–6 個重要句型或文法結構，說明用法(explain_zh)並附一個例句(example_en)。\n只輸出 JSON。\n\n文章：\n${body.slice(0, 16000)}`,
+    vocabSchema, 0.5,
+  ).catch(() => ({ vocab: [], phrases: [], patterns: [] }));
+
+  const summarySchema = { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'] };
+  const summaryTask = readerJSON(
+    `用繁體中文寫出這篇文章的整體大意（重點摘要，3–5 句）。只輸出 JSON。\n\n文章：\n${body.slice(0, 16000)}`,
+    summarySchema, 0.4,
+  ).then(r => r.summary || '').catch(() => '');
+
+  const [transArr, vocabOut, summary] = await Promise.all([Promise.all(transTasks), vocabTask, summaryTask]);
+  const paragraphs = transArr.flat();
+
+  const article = {
+    tocId: toc.id, title: toc.title, body,
+    paragraphs, summary,
+    vocab: vocabOut.vocab || [], phrases: vocabOut.phrases || [], patterns: vocabOut.patterns || [],
+    processedAt: now(),
+  };
+  book.articles = book.articles || {};
+  book.articles[toc.id] = article;
+  toc.done = true;
+  book.updatedAt = now();
+  saveReader();
+  renderBook(book);
+  renderArticle(book, article);
+  toast('精讀整理完成');
+}
+
+function openArticle(book, toc) {
+  readerCurrentTocId = toc.id;
+  renderBook(book); // 更新目錄 active 狀態
+  const existing = book.articles && book.articles[toc.id];
+  if (existing) { renderArticle(book, existing); return; }
+  processArticle(book, toc);
+}
+
+/* ---------- 文章渲染（含螢光筆、朗讀、加入詞庫） ---------- */
+function buildKnownWordRegex() {
+  const words = Array.from(new Set(cards.map(c => (c.data.word || '').toLowerCase().trim())
+    .filter(w => w && /^[a-z][a-z'-]{1,}$/.test(w))));
+  if (!words.length) return null;
+  words.sort((a, b) => b.length - a.length);
+  try { return new RegExp(`\\b(${words.map(escapeRegExp).join('|')})(s|es|ed|ing|d)?\\b`, 'gi'); }
+  catch { return null; }
+}
+function highlightKnown(text, re) {
+  const safe = esc(text);
+  if (!re) return safe;
+  re.lastIndex = 0;
+  return safe.replace(re, m => `<mark class="rd-known">${m}</mark>`);
+}
+
+function renderArticle(book, a) {
+  const el = $('#readerArticle');
+  const re = buildKnownWordRegex();
+  const paras = (a.paragraphs || []).map(p => {
+    const en = highlightKnown(p.en || '', re);
+    return `<div class="rd-para">
+      <p class="rd-en">${en} <button class="speak-btn rd-para-spk" data-speak="${esc(p.en || '')}" data-src="browser" title="朗讀此段" type="button">🔊</button></p>
+      <p class="rd-zh">${esc(p.zh || '')}</p>
+    </div>`;
+  }).join('') || '<p class="hint">（沒有逐段內容）</p>';
+
+  const vocabHtml = (a.vocab || []).map(v => `<div class="rd-vitem">
+      <div class="rd-vhead">
+        <b class="rd-vword">${esc(v.word)}</b>
+        ${spkw(v.word)}
+        <button class="btn ghost small rd-add-vocab" data-word="${esc(v.word)}" data-ex="${esc(v.example_en || '')}">＋ 加入詞庫</button>
+      </div>
+      ${v.meaning_zh ? `<div class="rd-vmean">${esc(v.meaning_zh)}</div>` : ''}
+      ${v.example_en ? `<div class="rd-vex">${esc(v.example_en)} <button class="speak-btn" data-speak="${esc(v.example_en)}" data-src="browser" title="朗讀例句" type="button">🔊</button></div>` : ''}
+      ${v.example_zh ? `<div class="rd-vexzh">${esc(v.example_zh)}</div>` : ''}
+    </div>`).join('') || '<p class="hint">—</p>';
+
+  const phraseHtml = (a.phrases || []).map(p => `<div class="rd-pitem"><b>${esc(p.phrase)}</b>${p.meaning_zh ? ` — ${esc(p.meaning_zh)}` : ''} <button class="speak-btn" data-speak="${esc(p.phrase)}" data-src="browser" type="button">🔊</button></div>`).join('') || '<p class="hint">—</p>';
+
+  const patternHtml = (a.patterns || []).map(p => `<div class="rd-pitem"><b>${esc(p.pattern)}</b>${p.explain_zh ? `<div class="rd-vmean">${esc(p.explain_zh)}</div>` : ''}${p.example_en ? `<div class="rd-vex">${esc(p.example_en)} <button class="speak-btn" data-speak="${esc(p.example_en)}" data-src="browser" type="button">🔊</button></div>` : ''}</div>`).join('') || '<p class="hint">—</p>';
+
+  el.innerHTML = `
+    <div class="rd-article-head">
+      <h2 class="rd-atitle">${esc(a.title)}</h2>
+      <div class="rd-tools">
+        <button class="btn ghost small" id="rdReadAll">🔊 朗讀整篇</button>
+        <button class="btn ghost small" id="rdStop">⏹ 停止</button>
+        <button class="btn ghost small" id="rdReprocess" title="重新用 AI 整理這篇">↻ 重新整理</button>
+      </div>
+    </div>
+    ${a.summary ? `<div class="rd-summary"><div class="rd-sec-title">📌 段落大意 ${spkZh(a.summary)}</div><p>${esc(a.summary)}</p></div>` : ''}
+    <div class="rd-section"><div class="rd-sec-title">📖 逐段中英對照</div>${paras}</div>
+    <div class="rd-cols">
+      <div class="rd-section"><div class="rd-sec-title">🔑 重要單字</div>${vocabHtml}</div>
+      <div class="rd-section"><div class="rd-sec-title">🧩 重要片語</div>${phraseHtml}</div>
+      <div class="rd-section"><div class="rd-sec-title">🏗 重要句型</div>${patternHtml}</div>
+    </div>`;
+  el.scrollTop = 0;
+}
+
+/* ---------- 加入詞庫彈窗 ---------- */
+function openReaderAdd(word, example) {
+  $('#raddWord').value = word || '';
+  $('#raddRaw').value = '';
+  const ex = $('#raddExample');
+  ex.textContent = example ? `文章例句：${example}` : '';
+  $('#raddStatus').hidden = true;
+  const dup = findExistingCard(word);
+  if (dup) toast(`「${word}」已在詞庫，仍可重新整理一張`, false);
+  $('#readerAddModal').hidden = false;
+  document.body.classList.add('modal-open');
+  $('#raddWord').focus();
+}
+function closeReaderAdd() {
+  $('#readerAddModal').hidden = true;
+  document.body.classList.remove('modal-open');
+}
+async function readerDoAdd() {
+  const word = $('#raddWord').value.trim();
+  const raw = $('#raddRaw').value.trim();
+  if (!word) { toast('請輸入單字', true); return; }
+  const status = $('#raddStatus');
+  const btn = $('#raddGenBtn');
+  status.hidden = false; status.className = 'gen-status';
+  status.innerHTML = '<span class="spinner"></span> 整理中…';
+  btn.disabled = true;
+  try {
+    const data = await callGemini(word, raw);
+    const card = addCardFromData(data, raw);
+    saveCards();
+    cloudUpsert(card);
+    toast(`已加入「${card.data.word}」到詞庫`);
+    closeReaderAdd();
+    // 重新渲染文章以更新螢光筆標示
+    const book = readerBooks.find(b => b.id === readerCurrentBookId);
+    if (book && readerCurrentTocId && book.articles?.[readerCurrentTocId]) renderArticle(book, book.articles[readerCurrentTocId]);
+  } catch (e) {
+    status.className = 'gen-status error';
+    status.textContent = '⚠️ ' + e.message;
+  } finally { btn.disabled = false; }
+}
+
+/* ---------- 綁定 ---------- */
+function fileToBase64(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(',')[1]);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+// 泛用 Gemini 請求（支援圖片；含金鑰輪詢與併發限制）
+async function geminiGenerate(parts, cfg = {}) {
+  const keys = activeKeys();
+  if (!keys.length) throw new Error('尚未設定 API 金鑰，請到「設定」填入。');
+  const body = {
+    contents: [{ role: 'user', parts }],
+    generationConfig: {
+      temperature: cfg.temperature ?? 0.6,
+      maxOutputTokens: cfg.maxOutputTokens ?? 8192,
+      ...(cfg.schema ? { responseMimeType: 'application/json', responseSchema: cfg.schema } : {}),
+    },
+  };
+  await acquireSlot();
+  try {
+    let lastErr;
+    for (let attempt = 0; attempt < keys.length; attempt++) {
+      const idx = keyIndex % keys.length; const key = keys[idx];
+      keyIndex = (keyIndex + 1) % keys.length;
+      try {
+        const data = await requestGemini(key, body);
+        const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+        if (!text) throw new Error('沒有回傳內容。');
+        return text;
+      } catch (err) {
+        lastErr = err;
+        if (err.status && ![429, 500, 502, 503, 504].includes(err.status)) throw new Error(`第 ${idx + 1} 把金鑰${err.message}`);
+      }
+    }
+    throw new Error(`所有金鑰都失敗了：${lastErr ? lastErr.message : '未知錯誤'}`);
+  } finally { releaseSlot(); }
+}
+async function readerJSON(prompt, schema, temperature) {
+  const text = await geminiGenerate([{ text: prompt }], { schema, temperature, maxOutputTokens: 8192 });
+  try { return JSON.parse(text); } catch { throw new Error('無法解析回傳的 JSON。'); }
+}
+async function visionTranscribe(file) {
+  const b64 = await fileToBase64(file);
+  return geminiGenerate(
+    [{ text: '把這張圖片中的英文文章文字完整轉錄為純文字，保留段落換行；不要翻譯、不要加入任何說明。' },
+      { inlineData: { mimeType: file.type || 'image/png', data: b64 } }],
+    { temperature: 0.1 },
+  );
+}
+
+function bindReader() {
+  $('#readerPdfFile')?.addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0];
+    if (f) readerAddPdf(f);
+    e.target.value = '';
+  });
+  $('#readerPasteBtn')?.addEventListener('click', async () => {
+    const title = (prompt('文章標題（例如：文章來源或主題）') || '').trim();
+    if (title === null) return;
+    const text = (prompt('把文章英文內容貼在這裡：') || '').trim();
+    if (!text) { toast('沒有內容', true); return; }
+    readerAddText(title || '未命名文章', text);
+  });
+  $('#readerImgFile')?.addEventListener('change', async e => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    const hint = $('#readerLibHint');
+    const setHint = t => { if (hint) hint.textContent = t; };
+    try {
+      setHint('AI 辨識圖片文字中…');
+      const text = (await visionTranscribe(f)).trim();
+      setHint('');
+      if (!text) { toast('圖片中沒有辨識到文字', true); return; }
+      const title = (prompt('文章標題（可自訂）', f.name.replace(/\.[^.]+$/, '')) || '').trim();
+      readerAddText(title || '截圖文章', text);
+    } catch (err) { setHint(''); toast('圖片辨識失敗：' + err.message, true); }
+  });
+
+  $('#readerBackToLib')?.addEventListener('click', () => {
+    readerCurrentBookId = null; readerCurrentTocId = null; renderReader();
+  });
+  $('#readerRenameBook')?.addEventListener('click', () => {
+    const book = readerBooks.find(b => b.id === readerCurrentBookId);
+    if (!book) return;
+    const t = (prompt('新書名', book.title) || '').trim();
+    if (!t) return;
+    book.title = t; book.updatedAt = now(); saveReader(); renderReader();
+  });
+  $('#readerDeleteBook')?.addEventListener('click', () => {
+    const book = readerBooks.find(b => b.id === readerCurrentBookId);
+    if (!book) return;
+    if (!confirm(`確定刪除《${book.title}》？此動作無法復原。`)) return;
+    readerBooks = readerBooks.filter(b => b.id !== book.id);
+    readerCurrentBookId = null; readerCurrentTocId = null;
+    saveReader(); renderReader();
+  });
+
+  $('#readerBookList')?.addEventListener('click', e => {
+    const b = e.target.closest('[data-book]');
+    if (b) { readerCurrentBookId = b.dataset.book; readerCurrentTocId = null; renderReader(); }
+  });
+  $('#readerToc')?.addEventListener('click', e => {
+    const item = e.target.closest('[data-toc]');
+    if (!item) return;
+    const book = readerBooks.find(b => b.id === readerCurrentBookId);
+    if (!book) return;
+    const toc = (book.toc || []).find(t => t.id === item.dataset.toc);
+    if (toc) openArticle(book, toc);
+  });
+  $('#readerArticle')?.addEventListener('click', e => {
+    if (e.target.closest('.speak-btn')) return; // 交給全域喇叭
+    const add = e.target.closest('.rd-add-vocab');
+    if (add) { openReaderAdd(add.dataset.word, add.dataset.ex); return; }
+    if (e.target.closest('#rdReadAll')) {
+      const book = readerBooks.find(b => b.id === readerCurrentBookId);
+      const a = book && book.articles && book.articles[readerCurrentTocId];
+      if (a) speakSequence((a.paragraphs || []).map(p => ({ text: p.en, lang: TARGET_LANG() })));
+      return;
+    }
+    if (e.target.closest('#rdStop')) { if (window.speechSynthesis) window.speechSynthesis.cancel(); return; }
+    if (e.target.closest('#rdReprocess')) {
+      const book = readerBooks.find(b => b.id === readerCurrentBookId);
+      const toc = book && (book.toc || []).find(t => t.id === readerCurrentTocId);
+      if (book && toc && confirm('重新用 AI 整理這篇文章？')) processArticle(book, toc);
+      return;
+    }
+  });
+
+  // 加入詞庫彈窗
+  $('#raddGenBtn')?.addEventListener('click', readerDoAdd);
+  $('#readerAddModal')?.querySelectorAll('[data-close-radd]').forEach(el => el.addEventListener('click', closeReaderAdd));
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !$('#readerAddModal').hidden) closeReaderAdd();
   });
 }
 
