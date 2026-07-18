@@ -3503,7 +3503,7 @@ function sideVocabHtml(vocab, { jumpable = false } = {}) {
     const attrs = canJump ? ` data-start="${start}" title="點擊跳到影片／音檔對應處"` : '';
     return `<div class="${cls}"${attrs}>${esc(ex)} <button class="speak-btn" data-speak="${esc(ex)}" data-src="browser" type="button">🔊</button></div>`;
   };
-  return list.map(v => `<div class="rd-vitem">
+  return list.map(v => `<div class="rd-vitem" data-word="${esc((v.word || '').toLowerCase())}">
       <div class="rd-vhead"><b class="rd-vword">${esc(v.word)}</b>${spkw(v.word)}
         <button class="btn ghost small rd-add-vocab" data-word="${esc(v.word)}" data-ex="${esc(v.example_en || '')}">＋ 加入詞庫</button></div>
       ${v.meaning_zh ? `<div class="rd-vmean">${esc(v.meaning_zh)}</div>` : ''}
@@ -3564,27 +3564,61 @@ function addListenSideVocab(word, exampleEn, exampleStart) {
   if (!item) { toast('請先開啟一則聽力', true); return; }
   item.vocab = item.vocab || [];
   const key = word.toLowerCase();
-  if (item.vocab.some(v => (v.word || '').toLowerCase() === key)) {
-    toast(`「${word}」已在重要單字`);
-    return;
-  }
-  const entry = { word, meaning_zh: '查詢中…', example_en: exampleEn || '' };
-  if (exampleStart != null && exampleStart !== '') entry.example_start = exampleStart;
-  item.vocab.unshift(entry);
-  item.updatedAt = now();
-  saveListen();
-  const box = $('#lsVocabList');
-  if (box) {
-    box.innerHTML = sideVocabHtml(item.vocab, { jumpable: true });
-  } else if (listenCurrentId === item.id) {
-    renderListenItem(item);
-  }
-  toast(`已加入「${word}」`);
-  enrichSideVocabMeaning(item, word, () => {
+  const exists = item.vocab.some(v => (v.word || '').toLowerCase() === key);
+  if (!exists) {
+    const entry = { word, meaning_zh: '查詢中…', example_en: exampleEn || '' };
+    if (exampleStart != null && exampleStart !== '') entry.example_start = exampleStart;
+    item.vocab.unshift(entry);
+    item.updatedAt = now();
     saveListen();
-    const b = $('#lsVocabList');
-    if (b) b.innerHTML = sideVocabHtml(item.vocab, { jumpable: true });
-  });
+    const box = $('#lsVocabList');
+    if (box) {
+      box.innerHTML = sideVocabHtml(item.vocab, { jumpable: true });
+    } else if (listenCurrentId === item.id) {
+      renderListenItem(item);
+    }
+    toast(`已加入「${word}」`);
+    enrichSideVocabMeaning(item, word, () => {
+      saveListen();
+      const b = $('#lsVocabList');
+      if (b) b.innerHTML = sideVocabHtml(item.vocab, { jumpable: true });
+      scrollListenVocabIntoView(word);
+    });
+  } else {
+    toast(`「${word}」已在重要單字`);
+  }
+  scrollListenVocabIntoView(word);
+}
+
+/** 右側欄滾到指定重要單字，並暫時高亮 */
+function scrollListenVocabIntoView(word) {
+  const key = String(word || '').toLowerCase();
+  if (!key) return;
+  const col = document.querySelector('#listenSide .rd-collapse[data-collapse="vocab"]');
+  if (col) {
+    col.classList.remove('collapsed');
+    setListenCollapse('vocab', false);
+  }
+  const side = $('#listenSide');
+  const el = document.querySelector(`#lsVocabList .rd-vitem[data-word="${CSS.escape(key)}"]`);
+  if (!el) return;
+  // 先確保在側欄可視區
+  try {
+    const sRect = side?.getBoundingClientRect();
+    const eRect = el.getBoundingClientRect();
+    if (side && sRect) {
+      const delta = (eRect.top - sRect.top) - 12;
+      side.scrollTo({ top: side.scrollTop + delta, behavior: 'smooth' });
+    } else {
+      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  } catch {
+    el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  el.classList.remove('rd-vitem-flash');
+  void el.offsetWidth;
+  el.classList.add('rd-vitem-flash');
+  setTimeout(() => el.classList.remove('rd-vitem-flash'), 1600);
 }
 
 function renderArticle(book, a) {
@@ -3908,7 +3942,8 @@ function bindReader() {
             language, captionSource,
             segments:[{start,end,en,zh}],
             vocab:[{word,meaning_zh,example_en,example_start}], phrases:[{phrase,meaning_zh,example_en,example_start}],
-            grammar:[{point,explain_zh,example_en,example_start}], mindmap:{title,branches:[{title,bullets[]}]}, summary }
+            grammar:[{point,explain_zh,example_en,example_start}],
+            mindmap:{title,title_start,branches:[{title,start,bullets:[{text,start}]}]}, summary }
    媒體檔由雲端後端存進 Firebase Storage（stt-tool 專案）；逐字稿/翻譯/分析存本機+雲端 meta。
    ========================================================================= */
 let listenItems = [];
@@ -4052,19 +4087,41 @@ async function createBrowserTranslator() {
   } catch { return null; }
 }
 
-/** 預設：快速瀏覽器翻譯整篇逐字稿 */
+/** 即時把某一句的中文寫進逐字稿 DOM（不整頁重繪） */
+function patchListenSegZh(idx, zh) {
+  const el = document.querySelector(`#listenTranscript .ls-seg[data-i="${idx}"]`);
+  if (!el) return;
+  let zhEl = el.querySelector('.ls-zh');
+  if (!zh) {
+    if (zhEl) zhEl.remove();
+    return;
+  }
+  if (!zhEl) {
+    zhEl = document.createElement('div');
+    zhEl.className = 'ls-zh';
+    el.appendChild(zhEl);
+  }
+  zhEl.textContent = zh;
+  if (typeof hideZh !== 'undefined' && hideZh) zhEl.style.display = 'none';
+  else zhEl.style.display = '';
+}
+
+/** 預設：快速瀏覽器翻譯整篇逐字稿（譯完一句就顯示一句） */
 async function translateListenBrowser(item, showStage) {
   const segs = item.segments || [];
   if (!segs.length) return;
   const translator = await createBrowserTranslator();
   const engine = translator ? 'native' : 'gtx';
   item.translateEngine = engine;
-  const CONC = translator ? 4 : 10;
+  // 先確保逐字稿已在畫面上
+  if (listenCurrentId === item.id) renderListenItem(item);
+  const CONC = translator ? 3 : 6;
   let done = 0;
   for (let i = 0; i < segs.length; i += CONC) {
     const batch = segs.slice(i, i + CONC);
     if (showStage) showStage(`瀏覽器翻譯中… ${Math.min(i + CONC, segs.length)}/${segs.length}`);
-    await Promise.all(batch.map(async (s) => {
+    await Promise.all(batch.map(async (s, j) => {
+      const idx = i + j;
       try {
         const zh = translator
           ? await browserTranslateOneNative(s.en, translator)
@@ -4075,9 +4132,9 @@ async function translateListenBrowser(item, showStage) {
         if (!s.zh) s.zh = '（翻譯失敗）';
       }
       done += 1;
+      if (listenCurrentId === item.id) patchListenSegZh(idx, s.zh);
     }));
     saveListenLocal();
-    if (listenCurrentId === item.id && done % 20 < CONC) renderListenItem(item);
   }
   saveListenLocal();
 }
@@ -4458,28 +4515,40 @@ async function analyzeListen(item, showStage) {
     attachListenExampleStarts(item);
   } catch (e) { console.error('聽力片語／文法分析失敗', e); }
 
-  // 3) 心智圖大綱（獨立一輪）
+  // 3) 心智圖大綱（獨立一輪，附時間戳）
   if (showStage) showStage('整理心智圖大綱…');
   try {
-    item.mindmap = await generateListenMindmap(text);
+    item.mindmap = await generateListenMindmap(item.segments || []);
+    attachListenMindmapStarts(item);
     if (listenCurrentId === item.id) renderListenItem(item);
   } catch (e) { console.error('聽力心智圖失敗', e); }
 
   saveListenLocal();
 }
 
-async function generateListenMindmap(text) {
+async function generateListenMindmap(segments) {
+  const segs = segments || [];
+  const timed = segs.map(s => `[${fmtTime(s.start)}] ${s.en}`).join('\n').slice(0, 16000);
   const schema = {
     type: 'object',
     properties: {
       title: { type: 'string' },
+      title_start: { type: 'number' },
       branches: {
         type: 'array',
         items: {
           type: 'object',
           properties: {
             title: { type: 'string' },
-            bullets: { type: 'array', items: { type: 'string' } },
+            start: { type: 'number' },
+            bullets: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: { text: { type: 'string' }, start: { type: 'number' } },
+                required: ['text'],
+              },
+            },
           },
           required: ['title'],
         },
@@ -4488,13 +4557,66 @@ async function generateListenMindmap(text) {
     required: ['title', 'branches'],
   };
   const out = await readerJSON(
-    `你是英語聽力精聽老師。根據以下逐字稿，用繁體中文產出「心智圖大綱」方便複習：\n- title：整段內容的中心主題（短句）\n- branches：4–8 個主分支；每個含 title（分支名）與 bullets（2–5 個短要點）\n要點請精煉、抓住論點與因果，不要逐句抄稿。只輸出 JSON。\n\n逐字稿：\n${text}`,
+    `你是英語聽力精聽老師。以下逐字稿每行前面有時間碼 [m:ss]。用繁體中文產出「心智圖大綱」方便複習與跳播：\n- title：中心主題（短句）\n- title_start：主題對應的大概開始秒數（數字）\n- branches：4–8 個主分支；每個含 title、start（秒）、bullets（2–5 個；每項含 text 與 start 秒數）\nstart 請對齊最相關那一行的時間碼；要點精煉，不要逐句抄稿。只輸出 JSON。\n\n逐字稿：\n${timed}`,
     schema, 0.4, 4096,
   );
+  // 相容：若 AI 仍回傳字串 bullets，轉成物件
+  const branches = (Array.isArray(out.branches) ? out.branches : []).map(b => ({
+    title: b.title || '',
+    start: typeof b.start === 'number' ? b.start : undefined,
+    bullets: (b.bullets || []).map(x => {
+      if (typeof x === 'string') return { text: x };
+      return { text: x.text || '', start: typeof x.start === 'number' ? x.start : undefined };
+    }),
+  }));
   return {
     title: out.title || '',
-    branches: Array.isArray(out.branches) ? out.branches : [],
+    title_start: typeof out.title_start === 'number' ? out.title_start : undefined,
+    branches,
   };
+}
+
+/** 幫心智圖補上／校正時間戳（對逐字稿） */
+function attachListenMindmapStarts(item) {
+  const segs = item.segments || [];
+  const mm = item.mindmap;
+  if (!mm || !segs.length) return;
+  const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff'\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const findStart = (hint, fallbackSec) => {
+    if (typeof fallbackSec === 'number' && Number.isFinite(fallbackSec)) {
+      // 吸附到最近段落起點
+      let best = segs[0].start, bestD = Infinity;
+      for (const s of segs) {
+        const d = Math.abs((s.start || 0) - fallbackSec);
+        if (d < bestD) { bestD = d; best = s.start; }
+      }
+      return best;
+    }
+    const needle = norm(hint);
+    if (!needle || needle.length < 2) return undefined;
+    let best = null, bestScore = 0;
+    for (const s of segs) {
+      const hay = norm(s.en);
+      if (!hay) continue;
+      if (hay.includes(needle) || needle.includes(hay)) return s.start;
+      const words = needle.split(' ').filter(w => w.length > 1).slice(0, 5);
+      if (!words.length) continue;
+      const hit = words.filter(w => hay.includes(w)).length;
+      const score = hit / words.length;
+      if (score > bestScore && score >= 0.4) { bestScore = score; best = s.start; }
+    }
+    return best == null ? undefined : best;
+  };
+  const ts = findStart(mm.title, mm.title_start);
+  if (ts != null) mm.title_start = ts;
+  (mm.branches || []).forEach(b => {
+    const bs = findStart(b.title, b.start);
+    if (bs != null) b.start = bs;
+    (b.bullets || []).forEach(bu => {
+      const us = findStart(bu.text, bu.start);
+      if (us != null) bu.start = us;
+    });
+  });
 }
 
 function listenCollapseState() {
@@ -4518,15 +4640,32 @@ function listenCollapseHtml(key, titleInner, bodyInner) {
 }
 function renderListenMindmap(mm) {
   if (!mm || (!mm.title && !(mm.branches || []).length)) return '<p class="hint">—</p>';
+  const jumpAttrs = (start, label) => {
+    if (start == null || start === '') return { cls: '', attrs: '' };
+    return {
+      cls: ' ls-jump',
+      attrs: ` data-start="${start}" title="點擊跳到 ${fmtTime(start)}：${esc(label || '')}"`,
+    };
+  };
+  const centerJ = jumpAttrs(mm.title_start, mm.title);
   const branches = (mm.branches || []).map(b => {
-    const bullets = (b.bullets || []).map(x => `<li>${esc(x)}</li>`).join('');
+    const bj = jumpAttrs(b.start, b.title);
+    const bullets = (b.bullets || []).map(x => {
+      const text = typeof x === 'string' ? x : (x.text || '');
+      const start = typeof x === 'string' ? undefined : x.start;
+      const uj = jumpAttrs(start, text);
+      const time = start != null && start !== '' ? `<span class="mm-time">${fmtTime(start)}</span>` : '';
+      return `<li class="mm-bullet${uj.cls}"${uj.attrs}>${time}<span class="mm-bullet-text">${esc(text)}</span></li>`;
+    }).join('');
+    const bTime = b.start != null && b.start !== '' ? `<span class="mm-time">${fmtTime(b.start)}</span>` : '';
     return `<li class="mm-branch">
-      <div class="mm-branch-title">${esc(b.title || '')}</div>
+      <div class="mm-branch-title${bj.cls}"${bj.attrs}>${bTime}<span>${esc(b.title || '')}</span></div>
       ${bullets ? `<ul class="mm-bullets">${bullets}</ul>` : ''}
     </li>`;
   }).join('');
+  const cTime = mm.title_start != null && mm.title_start !== '' ? `<span class="mm-time">${fmtTime(mm.title_start)}</span>` : '';
   return `<div class="mm-map">
-    <div class="mm-center">${esc(mm.title || '大綱')}</div>
+    <div class="mm-center${centerJ.cls}"${centerJ.attrs}>${cTime}<span>${esc(mm.title || '大綱')}</span></div>
     ${branches ? `<ul class="mm-branches">${branches}</ul>` : ''}
   </div>`;
 }
@@ -4583,7 +4722,8 @@ async function relistenAnalyze(item, part) {
   } else if (part === 'mindmap') {
     toast('重新整理心智圖大綱中…');
     try {
-      item.mindmap = await generateListenMindmap(text);
+      item.mindmap = await generateListenMindmap(item.segments || []);
+      attachListenMindmapStarts(item);
       item.updatedAt = now(); saveListen();
       if (listenCurrentId === item.id) renderListenItem(item);
       toast('心智圖大綱已重新整理');

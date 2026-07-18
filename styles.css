@@ -1058,6 +1058,11 @@ html.hide-zh .ls-zh { display: none !important; }
   font-weight: 800; font-size: 14px; color: var(--primary);
   background: var(--primary-soft); border: 1px solid var(--primary);
   border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; text-align: center;
+  display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;
+}
+.mm-center.ls-jump, .mm-branch-title.ls-jump, .mm-bullet.ls-jump { cursor: pointer; }
+.mm-center.ls-jump:hover, .mm-branch-title.ls-jump:hover, .mm-bullet.ls-jump:hover {
+  background: var(--primary-soft);
 }
 .mm-branches { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .mm-branch {
@@ -1065,9 +1070,28 @@ html.hide-zh .ls-zh { display: none !important; }
   background: var(--bg-elev); border-radius: 0 8px 8px 0;
   padding: 8px 10px;
 }
-.mm-branch-title { font-weight: 700; color: var(--text); margin-bottom: 4px; }
-.mm-bullets { margin: 0; padding-left: 18px; color: var(--text-soft); }
-.mm-bullets li { margin: 2px 0; line-height: 1.45; }
+.mm-branch-title {
+  font-weight: 700; color: var(--text); margin-bottom: 4px;
+  display: flex; align-items: flex-start; gap: 8px; border-radius: 4px; padding: 2px 4px; margin: 0 -4px 4px;
+}
+.mm-bullets { margin: 0; padding-left: 0; list-style: none; color: var(--text-soft); }
+.mm-bullet {
+  margin: 2px 0; line-height: 1.45; display: flex; align-items: flex-start; gap: 8px;
+  border-radius: 4px; padding: 3px 4px;
+}
+.mm-bullet-text::before { content: '•'; margin-right: 6px; color: var(--text-mute); }
+.mm-time {
+  flex-shrink: 0; font-size: 11px; font-variant-numeric: tabular-nums;
+  color: var(--primary); font-weight: 700; min-width: 2.6em;
+}
+.rd-vitem-flash {
+  animation: rdVitemFlash 1.4s ease;
+  border-radius: 6px;
+}
+@keyframes rdVitemFlash {
+  0%, 100% { background: transparent; }
+  20%, 55% { background: var(--primary-soft); box-shadow: inset 3px 0 0 var(--primary); }
+}
 .ls-processing { display: flex; align-items: center; gap: 10px; color: var(--text-soft); padding: 20px 0; justify-content: center; text-align: center; }
 
 .lyt-opts {
