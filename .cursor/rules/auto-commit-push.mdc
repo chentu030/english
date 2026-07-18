@@ -1,0 +1,13 @@
+---
+description: 修改完成後自動 commit 並 push，不必再詢問
+alwaysApply: true
+---
+
+# 自動 Commit / Push
+
+完成程式修改後，**直接**依專案既有的 git commit／push 流程提交並推送到 remote，不必再問使用者是否要 commit 或 push。
+
+注意：
+- 仍遵守既有安全規範（不 commit 密鑰、`.env`、大型 PDF 等不該進版控的檔案）
+- 仍用清楚的 commit message（繁中、說明 why）
+- 使用者若明確說「先別 push／先別 commit」則該次例外
