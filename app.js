@@ -284,14 +284,10 @@ function pcmB64ToWavUrl(b64, sampleRate) {
   new Uint8Array(buffer, 44).set(bytes);
   return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
 }
-let ttsBusy = false;
-async function speakGeminiTTS(text) {
-  if (!text) return;
+// 生成單段 AI 語音，回傳 { b64, rate } 或 null（不播放）
+async function geminiTTSChunk(text) {
   const keys = activeKeys();
-  if (!keys.length) { toast('尚未設定 API 金鑰', true); return; }
-  if (ttsBusy) return;
-  ttsBusy = true;
-  toast('🤖 AI 生成語音中…');
+  if (!keys.length || !text) return null;
   const body = {
     contents: [{ role: 'user', parts: [{ text }] }],
     generationConfig: {
@@ -299,28 +295,59 @@ async function speakGeminiTTS(text) {
       speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
     },
   };
-  try {
-    for (const model of TTS_MODELS) {
-      for (let attempt = 0; attempt < keys.length; attempt++) {
-        const key = keys[keyIndex % keys.length];
-        keyIndex = (keyIndex + 1) % keys.length;
-        try {
-          const url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
-          const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-          if (!res.ok) {
-            if ([429, 500, 502, 503, 504].includes(res.status)) continue; // 換金鑰
-            break; // 這個模型不行（如 400/404），換下一個模型
-          }
-          const data = await res.json();
-          const part = data?.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-          if (!part) break;
-          const rate = parseInt((part.inlineData.mimeType || '').match(/rate=(\d+)/)?.[1] || '24000', 10);
-          new Audio(pcmB64ToWavUrl(part.inlineData.data, rate)).play();
-          ttsBusy = false;
-          return;
-        } catch (e) { /* 換下一把金鑰 */ }
-      }
+  for (const model of TTS_MODELS) {
+    for (let attempt = 0; attempt < keys.length; attempt++) {
+      const key = keys[keyIndex % keys.length];
+      keyIndex = (keyIndex + 1) % keys.length;
+      try {
+        const url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!res.ok) {
+          if ([429, 500, 502, 503, 504].includes(res.status)) continue; // 換金鑰
+          break; // 這個模型不行（如 400/404），換下一個模型
+        }
+        const data = await res.json();
+        const part = data?.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+        if (!part) break;
+        const rate = parseInt((part.inlineData.mimeType || '').match(/rate=(\d+)/)?.[1] || '24000', 10);
+        return { b64: part.inlineData.data, rate };
+      } catch (e) { /* 換下一把金鑰 */ }
     }
+  }
+  return null;
+}
+
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const a = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+  return a;
+}
+// 把多段 PCM（同取樣率）串成一個 WAV Blob
+function pcmChunksToWavBlob(chunks, sampleRate) {
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const buffer = new ArrayBuffer(44 + total);
+  const view = new DataView(buffer);
+  const w = (off, s) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); view.setUint32(4, 36 + total, true); w(8, 'WAVE'); w(12, 'fmt ');
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true); w(36, 'data'); view.setUint32(40, total, true);
+  let off = 44;
+  for (const c of chunks) { new Uint8Array(buffer, off, c.length).set(c); off += c.length; }
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+let ttsBusy = false;
+async function speakGeminiTTS(text) {
+  if (!text) return;
+  if (!activeKeys().length) { toast('尚未設定 API 金鑰', true); return; }
+  if (ttsBusy) return;
+  ttsBusy = true;
+  toast('🤖 AI 生成語音中…');
+  try {
+    const r = await geminiTTSChunk(text);
+    if (r) { new Audio(pcmB64ToWavUrl(r.b64, r.rate)).play(); return; }
     toast('AI 語音失敗，改用瀏覽器語音', true);
     speak(text);
   } finally { ttsBusy = false; }
@@ -3058,6 +3085,67 @@ async function processArticle(book, toc) {
   toast('精讀整理完成');
 }
 
+/* ---------- 朗讀整篇：瀏覽器 / AI（AI 音檔存雲端 Storage，網址存 Firestore） ---------- */
+let readerAudioEl = null;
+function readerStopAudio() {
+  if (readerAudioEl) { try { readerAudioEl.pause(); } catch {} readerAudioEl = null; }
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+}
+function readerPlayUrl(url) {
+  readerStopAudio();
+  readerAudioEl = new Audio(url);
+  readerAudioEl.play().catch(e => toast('播放失敗：' + e.message, true));
+}
+// 把文章逐段英文切成適合 TTS 的段落（每段約 1200 字內）
+function ttsChunksFromArticle(a) {
+  const paras = (a.paragraphs || []).map(p => (p.en || '').trim()).filter(Boolean);
+  const chunks = []; let cur = '';
+  for (const p of paras) {
+    if (cur && (cur.length + p.length + 1) > 1200) { chunks.push(cur); cur = ''; }
+    cur += (cur ? '\n' : '') + p;
+  }
+  if (cur) chunks.push(cur);
+  return chunks;
+}
+let readerTtsBusy = false;
+async function readerPlayAI(book, a) {
+  if (a.audioUrl) { readerPlayUrl(a.audioUrl); return; }
+  if (readerTtsBusy) { toast('AI 語音生成中，請稍候…'); return; }
+  if (!activeKeys().length) { toast('尚未設定 API 金鑰', true); return; }
+  const chunks = ttsChunksFromArticle(a);
+  if (!chunks.length) { toast('沒有內容可朗讀', true); return; }
+  readerTtsBusy = true;
+  const btn = $('#rdReadAi');
+  const setLabel = t => { if (btn) btn.textContent = t; };
+  try {
+    const pcms = []; let rate = 24000;
+    for (let i = 0; i < chunks.length; i++) {
+      setLabel(`🤖 生成中 ${i + 1}/${chunks.length}…`);
+      const r = await geminiTTSChunk(chunks[i]);
+      if (!r) { toast('AI 語音生成失敗（可改用瀏覽器朗讀）', true); setLabel('🤖 AI 朗讀整篇'); return; }
+      pcms.push(b64ToBytes(r.b64)); rate = r.rate;
+    }
+    const blob = pcmChunksToWavBlob(pcms, rate);
+    setLabel('☁️ 保存中…');
+    try {
+      const fd = new FormData();
+      fd.append('file', new File([blob], 'article.wav', { type: 'audio/wav' }));
+      const res = await fetch(listenBackend() + '/beidanzi/store_audio', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error('狀態 ' + res.status);
+      const j = await res.json();
+      a.audioUrl = j.url; book.updatedAt = now(); saveReader();
+      setLabel('▶️ 播放 AI 語音');
+      readerPlayUrl(a.audioUrl);
+      toast('AI 語音完成，已保存雲端');
+    } catch (e) {
+      // 雲端保存失敗 → 先用本機 blob 播放（不保存）
+      setLabel('🤖 AI 朗讀整篇');
+      readerPlayUrl(URL.createObjectURL(blob));
+      toast('雲端保存失敗，先本機播放：' + e.message, true);
+    }
+  } finally { readerTtsBusy = false; }
+}
+
 function openArticle(book, toc) {
   readerCurrentTocId = toc.id;
   renderBook(book); // 更新目錄 active 狀態
@@ -3112,7 +3200,8 @@ function renderArticle(book, a) {
     <div class="rd-article-head">
       <h2 class="rd-atitle">${esc(a.title)}</h2>
       <div class="rd-tools">
-        <button class="btn ghost small" id="rdReadAll">🔊 朗讀整篇</button>
+        <button class="btn ghost small" id="rdReadAll">🔊 瀏覽器朗讀</button>
+        <button class="btn ghost small" id="rdReadAi">${a.audioUrl ? '▶️ 播放 AI 語音' : '🤖 AI 朗讀整篇'}</button>
         <button class="btn ghost small" id="rdStop">⏹ 停止</button>
         <button class="btn ghost small" id="rdReprocess" title="重新用 AI 整理這篇">↻ 重新整理</button>
       </div>
@@ -3326,12 +3415,19 @@ function bindReader() {
     const add = e.target.closest('.rd-add-vocab');
     if (add) { openReaderAdd(add.dataset.word, add.dataset.ex); return; }
     if (e.target.closest('#rdReadAll')) {
+      readerStopAudio();
       const book = readerBooks.find(b => b.id === readerCurrentBookId);
       const a = book && book.articles && book.articles[readerCurrentTocId];
       if (a) speakSequence((a.paragraphs || []).map(p => ({ text: p.en, lang: TARGET_LANG() })));
       return;
     }
-    if (e.target.closest('#rdStop')) { if (window.speechSynthesis) window.speechSynthesis.cancel(); return; }
+    if (e.target.closest('#rdReadAi')) {
+      const book = readerBooks.find(b => b.id === readerCurrentBookId);
+      const a = book && book.articles && book.articles[readerCurrentTocId];
+      if (a) readerPlayAI(book, a);
+      return;
+    }
+    if (e.target.closest('#rdStop')) { readerStopAudio(); return; }
     if (e.target.closest('#rdReprocess')) {
       const book = readerBooks.find(b => b.id === readerCurrentBookId);
       const toc = book && (book.toc || []).find(t => t.id === readerCurrentTocId);
