@@ -4012,13 +4012,168 @@ async function listenAfterTranscribe(item) {
   item.status = 'translating';
   saveListen();
   if (listenCurrentId === item.id) renderListenItem(item); // 先顯示英文與播放器
-  await translateListen(item, showStage);
+  await translateListenBrowser(item, showStage);
   await analyzeListen(item, showStage);
   item.status = 'done'; item.updatedAt = now();
   saveListen();
   if (listenCurrentId === item.id) renderListenItem(item);
   renderListenList();
   toast('聽力精聽整理完成');
+}
+
+/** 單句：Chrome/Edge Translator API（若可用） */
+async function browserTranslateOneNative(text, translator) {
+  if (!translator || !text) return '';
+  try { return await translator.translate(text); } catch { return ''; }
+}
+
+/** 單句：Google 網頁翻譯（gtx，免金鑰、速度快） */
+async function browserTranslateOneGtx(text, sl = 'en', tl = 'zh-TW') {
+  if (!text || !String(text).trim()) return '';
+  const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl='
+    + encodeURIComponent(sl) + '&tl=' + encodeURIComponent(tl) + '&dt=t&q=' + encodeURIComponent(text);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('瀏覽器翻譯 HTTP ' + res.status);
+  const data = await res.json();
+  return ((data && data[0]) || []).map(x => x && x[0]).filter(Boolean).join('') || '';
+}
+
+async function createBrowserTranslator() {
+  // Chrome 內建 Translator（實驗性）；不可用則回 null，改走 gtx
+  try {
+    if (typeof Translator === 'undefined') return null;
+    const src = 'en', tgt = 'zh-Hant';
+    if (Translator.availability) {
+      const a = await Translator.availability({ sourceLanguage: src, targetLanguage: tgt });
+      if (a === 'unavailable') return null;
+    }
+    return await Translator.create({ sourceLanguage: src, targetLanguage: tgt });
+  } catch { return null; }
+}
+
+/** 預設：快速瀏覽器翻譯整篇逐字稿 */
+async function translateListenBrowser(item, showStage) {
+  const segs = item.segments || [];
+  if (!segs.length) return;
+  const translator = await createBrowserTranslator();
+  const engine = translator ? 'native' : 'gtx';
+  item.translateEngine = engine;
+  const CONC = translator ? 4 : 10;
+  let done = 0;
+  for (let i = 0; i < segs.length; i += CONC) {
+    const batch = segs.slice(i, i + CONC);
+    if (showStage) showStage(`瀏覽器翻譯中… ${Math.min(i + CONC, segs.length)}/${segs.length}`);
+    await Promise.all(batch.map(async (s) => {
+      try {
+        const zh = translator
+          ? await browserTranslateOneNative(s.en, translator)
+          : await browserTranslateOneGtx(s.en);
+        s.zh = zh || s.zh || '';
+      } catch (e) {
+        console.error('瀏覽器翻譯失敗', e);
+        if (!s.zh) s.zh = '（翻譯失敗）';
+      }
+      done += 1;
+    }));
+    saveListenLocal();
+    if (listenCurrentId === item.id && done % 20 < CONC) renderListenItem(item);
+  }
+  saveListenLocal();
+}
+
+/** Gemini 翻譯整篇（品質較好、較慢／耗額度） */
+async function translateListenGemini(item, showStage) {
+  const segs = item.segments || [];
+  const CH = 40;
+  const schema = { type: 'object', properties: { translations: { type: 'array', items: { type: 'string' } } }, required: ['translations'] };
+  item.translateEngine = 'gemini';
+  for (let i = 0; i < segs.length; i += CH) {
+    if (showStage) showStage(`Gemini 翻譯中… ${Math.min(i + CH, segs.length)}/${segs.length}`);
+    const part = segs.slice(i, i + CH);
+    const prompt = `把下面每一行英文翻成繁體中文。回傳 translations 陣列，長度與行數完全相同、順序一致（第 n 行對應第 n 個）。只輸出 JSON。\n\n${part.map((s, idx) => `${idx + 1}. ${s.en}`).join('\n')}`;
+    try {
+      const out = await readerJSON(prompt, schema, 0.3);
+      (out.translations || []).forEach((z, idx) => { if (part[idx] && z) part[idx].zh = z; });
+    } catch (e) { console.error('Gemini 翻譯失敗', e); }
+    saveListenLocal();
+  }
+}
+
+/** 使用者按「Gemini 翻譯」：整篇重翻 */
+async function relistenTranslateGemini(item) {
+  const segs = item.segments || [];
+  if (!segs.length) { toast('沒有逐字稿', true); return; }
+  const btn = $('#listenGeminiTranslate'); const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '翻譯中…'; }
+  const showStage = (t) => { if (btn) btn.textContent = t; };
+  try {
+    await translateListenGemini(item, showStage);
+    item.updatedAt = now(); saveListen();
+    if (listenCurrentId === item.id) renderListenItem(item);
+    toast('Gemini 翻譯完成');
+  } catch (e) {
+    toast('Gemini 翻譯失敗：' + e.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig || '✨ Gemini 翻譯'; }
+  }
+}
+
+/** CC 對不齊時：強制 YouTube 下載音訊 + Whisper 重掃 */
+async function listenForceWhisper(item) {
+  if (!item || item.kind !== 'youtube' || !item.videoId) {
+    toast('目前僅支援 YouTube 改用 Whisper 掃描', true);
+    return;
+  }
+  if (item.captionSource === 'whisper') {
+    if (!confirm('已經是 Whisper 逐字稿，要再掃描一次嗎？')) return;
+  } else if (!confirm('將下載音訊並用 Whisper 重新掃描時間軸（較久，會覆寫目前逐字稿）。確定？')) {
+    return;
+  }
+  const btn = $('#listenWhisperRescan'); const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '掃描中…'; }
+  const side = $('#listenSide');
+  const showStage = (txt) => {
+    if (btn) btn.textContent = txt.slice(0, 18);
+    if (side && listenCurrentId === item.id) side.innerHTML = `<div class="ls-processing"><span class="spinner"></span> ${esc(txt)}</div>`;
+  };
+  const prevStatus = item.status;
+  item.status = 'processing';
+  saveListen();
+  if (listenCurrentId === item.id) renderListenItem(item);
+  try {
+    showStage('下載音訊並 Whisper 掃描中…');
+    const fd = new FormData();
+    fd.append('url', 'https://www.youtube.com/watch?v=' + item.videoId);
+    fd.append('language', listenWhisperLang());
+    fd.append('force_whisper', '1');
+    const res = await fetch(listenBackend() + '/beidanzi/youtube', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error('後端回應錯誤 ' + res.status);
+    const j = await res.json();
+    item.captionSource = j.captionSource || 'whisper';
+    if (j.title) item.title = j.title;
+    item.segments = (j.segments || []).map(s => ({ start: s.start, end: s.end, en: (s.text || '').trim(), zh: '' }));
+    item.summary = ''; item.vocab = []; item.phrases = []; item.grammar = [];
+    item.updatedAt = now();
+    saveListen();
+    if (listenCurrentId === item.id) {
+      const tEl = $('#listenTitle'); if (tEl && item.title) tEl.textContent = item.title;
+      renderListenItem(item);
+    }
+    toast('Whisper 掃描完成，開始翻譯與整理…');
+    await listenAfterTranscribe(item);
+  } catch (e) {
+    item.status = prevStatus === 'done' ? 'done' : 'error';
+    saveListen();
+    if (listenCurrentId === item.id) renderListenItem(item);
+    toast('Whisper 掃描失敗：' + e.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig || '🎙 Whisper 掃描'; }
+  }
+}
+
+async function translateListen(item, showStage) {
+  // 相容舊呼叫：改走瀏覽器翻譯
+  return translateListenBrowser(item, showStage);
 }
 
 async function listenUploadFile(file) {
@@ -4110,22 +4265,6 @@ async function listenAddYoutube(url) {
   }
 }
 
-async function translateListen(item, showStage) {
-  const segs = item.segments || [];
-  const CH = 40;
-  const schema = { type: 'object', properties: { translations: { type: 'array', items: { type: 'string' } } }, required: ['translations'] };
-  for (let i = 0; i < segs.length; i += CH) {
-    if (showStage) showStage(`翻譯中… ${Math.min(i + CH, segs.length)}/${segs.length}`);
-    const part = segs.slice(i, i + CH);
-    const prompt = `把下面每一行英文翻成繁體中文。回傳 translations 陣列，長度與行數完全相同、順序一致（第 n 行對應第 n 個）。只輸出 JSON。\n\n${part.map((s, idx) => `${idx + 1}. ${s.en}`).join('\n')}`;
-    try {
-      const out = await readerJSON(prompt, schema, 0.3);
-      (out.translations || []).forEach((z, idx) => { if (part[idx]) part[idx].zh = z; });
-    } catch (e) { console.error('翻譯段落失敗', e); }
-    saveListenLocal();
-  }
-}
-
 async function analyzeListen(item, showStage) {
   const text = (item.segments || []).map(s => s.en).join(' ').slice(0, 16000);
   if (!text.trim()) return;
@@ -4200,29 +4339,6 @@ function attachListenExampleStarts(item) {
   (item.grammar || []).forEach(g => { const t = findStart(g.example_en); if (t != null) g.example_start = t; });
 }
 
-// 只重新翻譯未完成／失敗的段落
-async function relistenTranslate(item) {
-  const todo = (item.segments || []).map((s, i) => ({ s, i })).filter(x => !x.s.zh || /翻譯失敗/.test(x.s.zh));
-  if (!todo.length) { toast('沒有需要重新翻譯的段落'); return; }
-  const btn = $('#listenRetranslate'); const orig = btn ? btn.textContent : '';
-  if (btn) { btn.disabled = true; }
-  const CH = 40;
-  const schema = { type: 'object', properties: { translations: { type: 'array', items: { type: 'string' } } }, required: ['translations'] };
-  try {
-    for (let i = 0; i < todo.length; i += CH) {
-      if (btn) btn.textContent = `翻譯中 ${Math.min(i + CH, todo.length)}/${todo.length}…`;
-      const part = todo.slice(i, i + CH);
-      const prompt = `把下面每一行英文翻成繁體中文。回傳 translations 陣列，長度與行數完全相同、順序一致（第 n 行對應第 n 個）。只輸出 JSON。\n\n${part.map((x, idx) => `${idx + 1}. ${x.s.en}`).join('\n')}`;
-      try {
-        const out = await readerJSON(prompt, schema, 0.3);
-        (out.translations || []).forEach((z, idx) => { if (part[idx] && z) part[idx].s.zh = z; });
-      } catch (e) { console.error('重新翻譯失敗', e); }
-      saveListen();
-    }
-    if (listenCurrentId === item.id) renderListenItem(item);
-    toast('重新翻譯完成');
-  } finally { if (btn) { btn.disabled = false; btn.textContent = orig; } }
-}
 
 // 重新生成某一部分重點（summary / vocab / phrases / grammar）
 async function relistenAnalyze(item, part) {
@@ -4267,6 +4383,14 @@ function fmtTime(sec) {
 
 function renderListenItem(item) {
   $('#listenTitle').textContent = item.title;
+  const whisperBtn = $('#listenWhisperRescan');
+  if (whisperBtn) {
+    const canWhisper = item.kind === 'youtube' && !!item.videoId;
+    whisperBtn.hidden = !canWhisper;
+    whisperBtn.title = item.captionSource === 'whisper'
+      ? '已是 Whisper 逐字稿，可再掃描一次'
+      : 'CC 時間軸對不齊時，改下載音訊用 Whisper 掃描';
+  }
   // 只有換了 item（或播放器不存在）才重建播放器，避免整理過程中重置播放進度
   const hasPlayer = ytPlayer || listenMediaEl;
   if (listenPlayerId !== item.id || !hasPlayer) renderListenPlayer(item);
@@ -4491,9 +4615,13 @@ function bindListen() {
     addListenSideVocab(word, example, Number.isFinite(start) ? start : undefined);
   });
   $('#listenToggleZh')?.addEventListener('click', toggleHideZh);
-  $('#listenRetranslate')?.addEventListener('click', () => {
+  $('#listenWhisperRescan')?.addEventListener('click', () => {
     const it = listenItems.find(i => i.id === listenCurrentId);
-    if (it) relistenTranslate(it);
+    if (it) listenForceWhisper(it);
+  });
+  $('#listenGeminiTranslate')?.addEventListener('click', () => {
+    const it = listenItems.find(i => i.id === listenCurrentId);
+    if (it) relistenTranslateGemini(it);
   });
   bindListenResizer();
   $('#listenSide')?.addEventListener('click', e => {
