@@ -4394,30 +4394,104 @@ function dedupeRollupCaptions(segs) {
   }
   return out;
 }
-function mapListenCaptionSegments(rawSegs, { dedupe = true } = {}) {
+
+function captionEndsSentence(text) {
+  let t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t) return false;
+  if (!/[.!?。！？]["'”’)\]]*$/.test(t)) return false;
+  if (/\.$/.test(t) && /(?:^|[\s(\[])(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|approx|fig|vol|nos?|u\.s|u\.k|e\.g|i\.e)\.$/i.test(t)) return false;
+  if (/\b[A-Z]\.$/.test(t)) return false;
+  if (/\d\.$/.test(t)) return false;
+  return true;
+}
+function splitCaptionSentences(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t) return [];
+  const parts = t.split(/(?<=[.!?。！？])\s+(?=[A-Z"“‘「])/);
+  const out = parts.map(p => p.trim()).filter(Boolean);
+  return out.length ? out : [t];
+}
+/** 把斷在句中的 CC 片段併成完整句子 */
+function mergeCaptionSentences(segs, { maxChars = 420, maxGap = 3.5 } = {}) {
+  const merged = [];
+  let buf = null;
+  const flush = () => {
+    if (!buf) return;
+    const pieces = splitCaptionSentences(buf.text);
+    if (pieces.length <= 1) {
+      merged.push(buf);
+    } else {
+      const total = Math.max(1, pieces.reduce((n, p) => n + p.length, 0));
+      const t0 = buf.start;
+      const t1 = Math.max(buf.end, t0 + 0.4);
+      const span = Math.max(0.4, t1 - t0);
+      let cur = t0;
+      pieces.forEach((p, i) => {
+        const share = p.length / total;
+        const nxt = i === pieces.length - 1 ? t1 : +(cur + span * share).toFixed(2);
+        merged.push({ start: +cur.toFixed(2), end: +Math.max(nxt, cur + 0.2).toFixed(2), text: p });
+        cur = nxt;
+      });
+    }
+    buf = null;
+  };
+  for (const seg of segs || []) {
+    const text = String(seg.text || seg.en || '').replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    const start = Number(seg.start) || 0;
+    const end = seg.end != null ? Number(seg.end) : start;
+    if (!buf) {
+      buf = { start: +start.toFixed(2), end: +end.toFixed(2), text };
+    } else {
+      const gap = start - buf.end;
+      if (gap > maxGap * 2) {
+        flush();
+        buf = { start: +start.toFixed(2), end: +end.toFixed(2), text };
+      } else {
+        const joiner = /[-—/]$/.test(buf.text) ? '' : ' ';
+        buf.text = (buf.text + joiner + text).replace(/  +/g, ' ').trim();
+        buf.end = +Math.max(buf.end, end).toFixed(2);
+      }
+    }
+    if (buf && captionEndsSentence(buf.text)) flush();
+    else if (buf && buf.text.length >= maxChars) flush();
+  }
+  flush();
+  return merged;
+}
+
+function mapListenCaptionSegments(rawSegs, { dedupe = true, sentences = true } = {}) {
   const base = (rawSegs || []).map(s => ({
     start: s.start, end: s.end, text: (s.text || s.en || '').trim(), zh: s.zh || '',
   }));
-  const cleaned = dedupe ? dedupeRollupCaptions(base) : base;
+  let cleaned = dedupe ? dedupeRollupCaptions(base) : base;
+  if (sentences && dedupe) cleaned = mergeCaptionSentences(cleaned);
   const zhMap = new Map();
   base.forEach(s => { if (s.text && s.zh) zhMap.set(s.text, s.zh); });
   return cleaned.map(s => ({
-    start: s.start, end: s.end, en: s.text, zh: zhMap.get(s.text) || s.zh || '',
+    start: s.start, end: s.end, en: s.text, zh: zhMap.get(s.text) || '',
   }));
 }
-/** 開啟舊項目時清一次 CC 滾動重複（已標記則略過） */
+/** 開啟舊項目時清一次 CC 滾動重複＋併成完整句（已標記則略過） */
 function ensureListenCaptionsClean(item) {
-  if (!item || item.captionsDeduped) return false;
+  if (!item || item.captionsSentenceMerged) return false;
+  item.captionsSentenceMerged = true;
   item.captionsDeduped = true;
-  if (item.captionSource === 'whisper') return false;
+  if (item.captionSource === 'whisper') { saveListenLocal(); return false; }
   const segs = item.segments || [];
-  if (segs.length < 3) { saveListenLocal(); return false; }
+  if (segs.length < 2) { saveListenLocal(); return false; }
   const cleaned = mapListenCaptionSegments(segs.map(s => ({ start: s.start, end: s.end, text: s.en, zh: s.zh })));
-  if (cleaned.length >= segs.length * 0.92) { saveListenLocal(); return false; }
+  if (cleaned.length >= segs.length * 0.95 && cleaned.length === segs.length) {
+    const broken = segs.filter(s => {
+      const t = (s.en || '').trim();
+      return t && !captionEndsSentence(t);
+    }).length;
+    if (broken < Math.max(2, segs.length * 0.25)) { saveListenLocal(); return false; }
+  }
   item.segments = cleaned;
   item.updatedAt = now();
   saveListen();
-  toast(`已清除 CC 重複字幕（${segs.length} → ${cleaned.length} 段）；若中文對不齊請再按「瀏覽器翻譯」`);
+  toast(`已整理 CC 為完整句子（${segs.length} → ${cleaned.length} 段）；若中文對不齊請再按「瀏覽器翻譯」`);
   return true;
 }
 
@@ -4721,6 +4795,7 @@ async function listenForceCc(item) {
     if (j.title) item.title = j.title;
     item.segments = mapListenCaptionSegments(j.segments || []);
     item.captionsDeduped = true;
+    item.captionsSentenceMerged = true;
     item.summary = ''; item.vocab = []; item.phrases = []; item.grammar = []; item.mindmap = null;
     item.updatedAt = now();
     saveListen();
