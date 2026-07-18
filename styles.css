@@ -784,9 +784,13 @@ body.modal-open { overflow: hidden; }
 .rbc-title { font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rbc-sub { font-size: 12px; color: var(--text-soft); }
 
-.reader-book-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
-.reader-book-title { margin: 0; font-size: 20px; flex: 1; min-width: 160px; }
-.reader-book-tools { display: flex; gap: 8px; }
+.reader-book-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.reader-book-title {
+  margin: 0; font-size: 15px; font-weight: 700; line-height: 1.3;
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.reader-book-tools { display: flex; gap: 6px; flex-shrink: 0; }
+.reader-book-bar .btn.small { padding: 4px 10px; font-size: 12px; }
 
 .reader-split { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
 .reader-toc {
@@ -877,12 +881,58 @@ body.modal-open { overflow: hidden; }
 }
 
 /* ===================== 聽力 ===================== */
-.listen-split { display: grid; grid-template-columns: 1fr 8px var(--listen-side-w, 34%); gap: 12px; align-items: start; }
-.listen-left {
-  min-width: 0;
+/* 開啟單一聽力時：整頁鎖在螢幕高度，頂欄／標題不跟著滾走 */
+body:has(#listenItem:not([hidden])) {
+  height: 100dvh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 120px);
+}
+body:has(#listenItem:not([hidden])) .topbar { flex-shrink: 0; }
+body:has(#listenItem:not([hidden])) .container {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 1600px;
+  padding: 10px 20px 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+#view-listen.active:has(#listenItem:not([hidden])) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  animation: none;
+}
+#listenItem.reader-book {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+#listenItem .reader-book-bar { flex-shrink: 0; margin-bottom: 6px; }
+
+.listen-split {
+  display: grid;
+  grid-template-columns: 1fr 8px var(--listen-side-w, 34%);
+  gap: 12px;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.listen-left {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
 }
 .listen-resizer { align-self: stretch; cursor: col-resize; position: relative; touch-action: none; }
 .listen-resizer::before {
@@ -891,22 +941,28 @@ body.modal-open { overflow: hidden; }
 }
 .listen-resizer:hover::before, .listen-resizer.dragging::before { background: var(--primary); width: 4px; }
 .listen-player {
-  background: #000; border-radius: var(--radius); overflow: hidden; margin-bottom: 12px;
-  aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center;
+  background: #000; border-radius: var(--radius); overflow: hidden; margin: 0 auto 8px;
+  aspect-ratio: 16 / 9;
+  width: min(100%, calc(min(36vh, 380px) * 16 / 9));
+  max-width: 100%;
   flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
 }
-.listen-player.audio-only { aspect-ratio: auto; background: var(--bg-elev); padding: 14px; }
+.listen-player.audio-only {
+  aspect-ratio: auto; width: 100%;
+  background: var(--bg-elev); padding: 10px 14px;
+}
 .listen-player video, .listen-player iframe { width: 100%; height: 100%; border: 0; display: block; }
 .listen-player audio { width: 100%; }
 .listen-transcript-head {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  font-weight: 700; margin-bottom: 8px; flex-wrap: wrap; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-weight: 700; font-size: 13px; margin-bottom: 6px; flex-wrap: wrap; flex-shrink: 0;
 }
-.lth-tools { display: inline-flex; align-items: center; gap: 10px; }
-.listen-follow { font-size: 13px; font-weight: 400; color: var(--text-soft); display: inline-flex; align-items: center; gap: 5px; }
+.lth-tools { display: inline-flex; align-items: center; gap: 8px; }
+.listen-follow { font-size: 12px; font-weight: 400; color: var(--text-soft); display: inline-flex; align-items: center; gap: 5px; }
 .listen-transcript {
   background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 8px; flex: 1 1 auto; min-height: 220px; overflow-y: auto;
+  padding: 8px; flex: 1 1 auto; min-height: 120px; overflow-y: auto;
 }
 .ls-seg { padding: 8px 10px; border-radius: var(--radius-sm); cursor: pointer; border: 1px solid transparent; }
 .ls-seg:hover { background: var(--bg-soft); }
@@ -918,15 +974,26 @@ html.hide-zh .rd-zh,
 html.hide-zh .ls-zh { display: none !important; }
 
 .listen-side {
-  position: sticky; top: 72px; max-height: calc(100vh - 96px); overflow-y: auto;
-  background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px;
 }
 .ls-processing { display: flex; align-items: center; gap: 10px; color: var(--text-soft); padding: 20px 0; justify-content: center; text-align: center; }
 
 @media (max-width: 860px) {
-  .listen-split { grid-template-columns: 1fr; }
+  body:has(#listenItem:not([hidden])) { height: auto; overflow: auto; display: block; }
+  body:has(#listenItem:not([hidden])) .container {
+    height: auto; max-height: none; overflow: visible; display: block; padding: 14px 14px 40px;
+  }
+  #view-listen.active:has(#listenItem:not([hidden])) {
+    display: block; height: auto; overflow: visible;
+  }
+  #listenItem.reader-book { display: block; height: auto; overflow: visible; }
+  .listen-split { grid-template-columns: 1fr; height: auto; overflow: visible; }
   .listen-resizer { display: none; }
-  .listen-left { max-height: none; }
-  .listen-side { position: static; max-height: none; }
+  .listen-left { height: auto; max-height: none; overflow: visible; }
+  .listen-player { width: 100%; }
+  .listen-side { height: auto; max-height: none; }
   .listen-transcript { max-height: 40vh; flex: none; }
 }
