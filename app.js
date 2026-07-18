@@ -5303,21 +5303,38 @@ function enqueueListenYoutubeUrls(urls, opts = {}) {
 // 轉錄完成後統一做翻譯 + 重點分析
 async function listenAfterTranscribe(item, opts = {}) {
   const quiet = !!opts.quiet;
-  const side = $('#listenSide');
-  const showStage = (txt) => { if (side && listenCurrentId === item.id) side.innerHTML = `<div class="ls-processing"><span class="spinner"></span> ${esc(txt)}</div>`; };
+  const showStage = (txt) => setListenProgress(txt);
   item.status = 'translating';
   saveListen();
-  if (listenCurrentId === item.id) renderListenItem(item); // 先顯示英文與播放器
+  if (listenCurrentId === item.id) renderListenItem(item); // 先顯示英文與播放器＋右側欄位骨架
   else renderListenList();
-  if (item.translatePrefer === 'gemini') await translateListenGemini(item, showStage);
-  else await translateListenBrowser(item, showStage);
-  await analyzeListen(item, showStage);
-  item.status = 'done'; item.updatedAt = now();
-  saveListen();
-  if (listenCurrentId === item.id) renderListenItem(item);
-  renderListenList();
-  if (!quiet) toast('聽力精聽整理完成');
+  try {
+    if (item.translatePrefer === 'gemini') await translateListenGemini(item, showStage);
+    else await translateListenBrowser(item, showStage);
+    await analyzeListen(item, showStage);
+    item.status = 'done'; item.updatedAt = now();
+    saveListen();
+    if (listenCurrentId === item.id) renderListenItem(item);
+    renderListenList();
+    if (!quiet) toast('聽力精聽整理完成');
+  } finally {
+    clearListenProgress();
+  }
 }
+
+/** 左側進度條：不覆蓋右側大意／心智圖／單字 */
+function setListenProgress(txt) {
+  const el = $('#listenProgress');
+  if (!el) return;
+  if (!txt) {
+    el.hidden = true;
+    el.innerHTML = '';
+    return;
+  }
+  el.hidden = false;
+  el.innerHTML = `<span class="spinner"></span> <span>${esc(txt)}</span>`;
+}
+function clearListenProgress() { setListenProgress(''); }
 
 /** 單句：Chrome/Edge Translator API（若可用） */
 async function browserTranslateOneNative(text, translator) {
@@ -5503,10 +5520,9 @@ async function listenForceCc(item) {
   const btn = $('#listenCcRescan'); const orig = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = '抓取中…'; }
   setListenToolBusy(true);
-  const side = $('#listenSide');
   const showStage = (txt) => {
     if (btn) btn.textContent = txt.slice(0, 18);
-    if (side && listenCurrentId === item.id) side.innerHTML = `<div class="ls-processing"><span class="spinner"></span> ${esc(txt)}</div>`;
+    setListenProgress(txt);
   };
   const prevStatus = item.status;
   item.status = 'processing';
@@ -5547,6 +5563,7 @@ async function listenForceCc(item) {
     toast('CC 字幕失敗：' + e.message, true);
   } finally {
     setListenToolBusy(false);
+    clearListenProgress();
     if (btn) { btn.disabled = false; btn.textContent = orig || '📄 CC 字幕'; }
   }
 }
@@ -5565,10 +5582,9 @@ async function listenForceWhisper(item) {
   const btn = $('#listenWhisperRescan'); const orig = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = '掃描中…'; }
   setListenToolBusy(true);
-  const side = $('#listenSide');
   const showStage = (txt) => {
     if (btn) btn.textContent = txt.slice(0, 18);
-    if (side && listenCurrentId === item.id) side.innerHTML = `<div class="ls-processing"><span class="spinner"></span> ${esc(txt)}</div>`;
+    setListenProgress(txt);
   };
   const prevStatus = item.status;
   item.status = 'processing';
@@ -5603,6 +5619,7 @@ async function listenForceWhisper(item) {
     toast('Whisper 掃描失敗：' + e.message, true);
   } finally {
     setListenToolBusy(false);
+    clearListenProgress();
     if (btn) { btn.disabled = false; btn.textContent = orig || '🎙 Whisper'; }
   }
 }
@@ -6076,8 +6093,16 @@ function renderListenItem(item) {
       </div>`).join('');
   }
 
-  // 右側重點
-  if (item.status === 'done' || (item.vocab || []).length) {
+  // 右側重點：翻譯／整理中也保留欄位骨架，不整塊蓋成「整理中」
+  const hasSegs = !!(item.segments || []).length;
+  const hasSideData = !!(item.summary || (item.vocab || []).length || (item.phrases || []).length
+    || (item.grammar || []).length || item.mindmap);
+  const showSidePanels = item.status === 'done' || hasSideData || hasSegs
+    || item.status === 'translating' || item.status === 'processing';
+
+  if (item.status === 'error' && !hasSegs && !hasSideData) {
+    side.innerHTML = '<p class="hint">處理失敗，可刪除後重試。</p>';
+  } else if (showSidePanels) {
     // 舊資料可能還沒有 example_start：渲染前補一次
     if ((item.phrases || []).some(p => p.example_en && p.example_start == null)
       || (item.vocab || []).some(v => v.example_en && v.example_start == null)
@@ -6089,11 +6114,27 @@ function renderListenItem(item) {
       const on = listenEditingSide === field;
       return `<button class="btn ghost small side-edit-toggle" data-side-edit="${field}" type="button">${on ? '✓ 完成' : '✏️ 編輯'}</button>`;
     };
-    const vocabHtml = `<div id="lsVocabList">${sideVocabHtml(item.vocab, { jumpable: true, editing: listenEditingSide === 'vocab' })}</div>`;
-    const phraseHtml = `<div id="lsPhraseList">${sidePhrasesHtml(item.phrases, { jumpable: true, editing: listenEditingSide === 'phrases', field: 'phrases' })}</div>`;
-    const grammarHtml = `<div id="lsGrammarList">${sidePhrasesHtml(item.grammar, { jumpable: true, editing: listenEditingSide === 'grammar', field: 'grammar' })}</div>`;
-    const summaryBody = `<p>${item.summary ? esc(item.summary) : '<span class="hint">—</span>'}</p>`;
-    const mindBody = renderListenMindmap(item.mindmap);
+    const pendingHint = (label) => {
+      if (item.status === 'translating' || item.status === 'processing') {
+        return `<p class="hint">${esc(label)}（左側可看進度）</p>`;
+      }
+      return '<p class="hint">—</p>';
+    };
+    const vocabHtml = `<div id="lsVocabList">${(item.vocab || []).length || listenEditingSide === 'vocab'
+      ? sideVocabHtml(item.vocab, { jumpable: true, editing: listenEditingSide === 'vocab' })
+      : pendingHint('單字整理中')}</div>`;
+    const phraseHtml = `<div id="lsPhraseList">${(item.phrases || []).length || listenEditingSide === 'phrases'
+      ? sidePhrasesHtml(item.phrases, { jumpable: true, editing: listenEditingSide === 'phrases', field: 'phrases' })
+      : pendingHint('片語整理中')}</div>`;
+    const grammarHtml = `<div id="lsGrammarList">${(item.grammar || []).length || listenEditingSide === 'grammar'
+      ? sidePhrasesHtml(item.grammar, { jumpable: true, editing: listenEditingSide === 'grammar', field: 'grammar' })
+      : pendingHint('文法整理中')}</div>`;
+    const summaryBody = item.summary
+      ? `<p>${esc(item.summary)}</p>`
+      : pendingHint('大意整理中');
+    const mindBody = (item.mindmap && (item.mindmap.title || (item.mindmap.branches || []).length))
+      ? renderListenMindmap(item.mindmap)
+      : pendingHint('心智圖整理中');
     side.innerHTML = `
       <div class="rd-summary">
         <div class="rd-sec-title">📌 大意 ${item.summary ? spkZh(item.summary) : ''} ${regen('summary')}</div>
@@ -6103,10 +6144,8 @@ function renderListenItem(item) {
       ${listenCollapseHtml('vocab', `🔑 重要單字 ${regen('vocab')} ${editBtn('vocab')}`, vocabHtml)}
       ${listenCollapseHtml('phrases', `🧩 重要片語 ${regen('phrases')} ${editBtn('phrases')}`, phraseHtml)}
       ${listenCollapseHtml('grammar', `🏗 重要文法 ${regen('grammar')} ${editBtn('grammar')}`, grammarHtml)}`;
-  } else if (item.status !== 'error') {
-    side.innerHTML = '<div class="ls-processing"><span class="spinner"></span> 整理重點中…</div>';
   } else {
-    side.innerHTML = '<p class="hint">處理失敗，可刪除後重試。</p>';
+    side.innerHTML = '<p class="hint">開啟或新增內容後，右側會顯示大意與重點。</p>';
   }
 
   listenActiveIdx = -1;
