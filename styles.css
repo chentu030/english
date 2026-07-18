@@ -963,12 +963,14 @@ body:has(#view-reader.active #readerBook:not([hidden])) .container {
 .rd-imp-word {
   background: rgba(34, 160, 107, .28);
   border-radius: 3px; padding: 0 2px; color: inherit;
+  cursor: pointer;
 }
 .rd-imp-phrase {
   background: transparent;
   border-bottom: 2px solid #22a06b;
   border-radius: 0; padding: 0;
   box-decoration-break: clone; -webkit-box-decoration-break: clone;
+  cursor: pointer;
 }
 [data-theme="dark"] .rd-imp-word { background: rgba(34, 160, 107, .38); }
 [data-theme="dark"] .rd-imp-phrase { border-bottom-color: #3dcf8e; }

@@ -3618,7 +3618,7 @@ function buildKnownWordRegex() {
   catch { return null; }
 }
 
-/** 文中標示：重要片語綠底線、重要單字綠底、詞庫單字黃底 */
+/** 文中標示：重要片語綠底線、重要單字綠底、詞庫單字黃底（可點擊跳右側） */
 function highlightArticleEn(raw, { vocab = [], phrases = [], knownRe = null } = {}) {
   const text = String(raw || '');
   if (!text) return '';
@@ -3638,7 +3638,10 @@ function highlightArticleEn(raw, { vocab = [], phrases = [], knownRe = null } = 
       } catch { continue; }
       let m;
       while ((m = re.exec(text))) {
-        marks.push({ start: m.index, end: m.index + m[0].length, type, len: m[0].length });
+        marks.push({
+          start: m.index, end: m.index + m[0].length, type, len: m[0].length,
+          key: term.toLowerCase(),
+        });
         if (m[0].length === 0) re.lastIndex++;
       }
     }
@@ -3662,8 +3665,12 @@ function highlightArticleEn(raw, { vocab = [], phrases = [], knownRe = null } = 
   for (const mk of picked) {
     if (mk.start > cursor) html += wrapKnown(text.slice(cursor, mk.start));
     const chunk = esc(text.slice(mk.start, mk.end));
-    if (mk.type === 'phrase') html += `<mark class="rd-imp-phrase">${chunk}</mark>`;
-    else html += `<mark class="rd-imp-word">${chunk}</mark>`;
+    const keyAttr = attr(mk.key);
+    if (mk.type === 'phrase') {
+      html += `<mark class="rd-imp-phrase" data-imp-phrase="${keyAttr}" title="點擊跳到右側重要片語">${chunk}</mark>`;
+    } else {
+      html += `<mark class="rd-imp-word" data-imp-word="${keyAttr}" title="點擊跳到右側重要單字">${chunk}</mark>`;
+    }
     cursor = mk.end;
   }
   if (cursor < text.length) html += wrapKnown(text.slice(cursor));
@@ -3780,7 +3787,7 @@ function sidePhrasesHtml(phrases, { jumpable = false, editing = false, field = '
         ? ` data-pi="${jumpVal}" title="點擊跳到對應段落"`
         : ` data-start="${jumpVal}" title="點擊跳到影片／音檔對應處"`)
       : '';
-    return `<div class="def-item rd-pitem${jumpCls}"${jumpAttr}>
+    return `<div class="def-item rd-pitem${jumpCls}" data-phrase="${esc(key.toLowerCase())}"${jumpAttr}>
       <div class="rd-vhead"><b>${esc(key)}</b> <button class="speak-btn" data-speak="${esc(key)}" data-src="browser" type="button">🔊</button></div>
       ${mean ? `<div class="rd-vmean">${esc(mean)}</div>` : ''}
       ${p.example_en ? `<div class="example${jumpCls}"${jumpAttr}>${esc(p.example_en)} <button class="speak-btn" data-speak="${esc(p.example_en)}" data-src="browser" type="button">🔊</button></div>` : ''}
@@ -3840,17 +3847,24 @@ function addReaderSideVocab(word, exampleEn, examplePi) {
   scrollReaderVocabIntoView(word);
 }
 
-/** 右側欄滾到指定重要單字，並暫時高亮 */
-function scrollReaderVocabIntoView(word) {
-  const key = String(word || '').toLowerCase();
+/** 右側欄滾到指定項目並暫時高亮 */
+function scrollSidePanelItemIntoView({ sideSel, listSel, attr, value, collapseKey, setCollapse }) {
+  const key = String(value || '').toLowerCase();
   if (!key) return;
-  const col = document.querySelector('#readerArticle .rd-collapse[data-collapse="vocab"]');
-  if (col) {
-    col.classList.remove('collapsed');
-    setReaderCollapse('vocab', false);
+  if (collapseKey) {
+    const col = document.querySelector(`${sideSel} .rd-collapse[data-collapse="${collapseKey}"]`);
+    if (col) {
+      col.classList.remove('collapsed');
+      if (typeof setCollapse === 'function') setCollapse(collapseKey, false);
+    }
   }
-  const side = document.querySelector('#readerArticle .rd-aside');
-  const el = document.querySelector(`#rdVocabList .rd-vitem[data-word="${CSS.escape(key)}"]`);
+  const side = document.querySelector(sideSel);
+  let el = null;
+  try {
+    el = document.querySelector(`${listSel} [${attr}="${CSS.escape(key)}"]`);
+  } catch {
+    el = null;
+  }
   if (!el) return;
   try {
     const sRect = side?.getBoundingClientRect();
@@ -3868,6 +3882,48 @@ function scrollReaderVocabIntoView(word) {
   void el.offsetWidth;
   el.classList.add('rd-vitem-flash');
   setTimeout(() => el.classList.remove('rd-vitem-flash'), 1600);
+}
+
+/** 右側欄滾到指定重要單字，並暫時高亮 */
+function scrollReaderVocabIntoView(word) {
+  scrollSidePanelItemIntoView({
+    sideSel: '#readerArticle .rd-aside',
+    listSel: '#rdVocabList',
+    attr: 'data-word',
+    value: word,
+    collapseKey: 'vocab',
+    setCollapse: setReaderCollapse,
+  });
+}
+function scrollReaderPhraseIntoView(phrase) {
+  scrollSidePanelItemIntoView({
+    sideSel: '#readerArticle .rd-aside',
+    listSel: '#rdPhraseList',
+    attr: 'data-phrase',
+    value: phrase,
+    collapseKey: 'phrases',
+    setCollapse: setReaderCollapse,
+  });
+}
+function scrollListenVocabIntoView(word) {
+  scrollSidePanelItemIntoView({
+    sideSel: '#listenSide',
+    listSel: '#lsVocabList',
+    attr: 'data-word',
+    value: word,
+    collapseKey: 'vocab',
+    setCollapse: setListenCollapse,
+  });
+}
+function scrollListenPhraseIntoView(phrase) {
+  scrollSidePanelItemIntoView({
+    sideSel: '#listenSide',
+    listSel: '#lsPhraseList',
+    attr: 'data-phrase',
+    value: phrase,
+    collapseKey: 'phrases',
+    setCollapse: setListenCollapse,
+  });
 }
 
 function readerCollapseState() {
@@ -4204,37 +4260,6 @@ function addListenSideVocab(word, exampleEn, exampleStart) {
   scrollListenVocabIntoView(word);
 }
 
-/** 右側欄滾到指定重要單字，並暫時高亮 */
-function scrollListenVocabIntoView(word) {
-  const key = String(word || '').toLowerCase();
-  if (!key) return;
-  const col = document.querySelector('#listenSide .rd-collapse[data-collapse="vocab"]');
-  if (col) {
-    col.classList.remove('collapsed');
-    setListenCollapse('vocab', false);
-  }
-  const side = $('#listenSide');
-  const el = document.querySelector(`#lsVocabList .rd-vitem[data-word="${CSS.escape(key)}"]`);
-  if (!el) return;
-  // 先確保在側欄可視區
-  try {
-    const sRect = side?.getBoundingClientRect();
-    const eRect = el.getBoundingClientRect();
-    if (side && sRect) {
-      const delta = (eRect.top - sRect.top) - 12;
-      side.scrollTo({ top: side.scrollTop + delta, behavior: 'smooth' });
-    } else {
-      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }
-  } catch {
-    el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  }
-  el.classList.remove('rd-vitem-flash');
-  void el.offsetWidth;
-  el.classList.add('rd-vitem-flash');
-  setTimeout(() => el.classList.remove('rd-vitem-flash'), 1600);
-}
-
 /* ---------- 加入詞庫彈窗 ---------- */
 function openReaderAdd(word, example) {
   $('#raddWord').value = word || '';
@@ -4480,6 +4505,16 @@ function bindReader() {
     if (toc) openArticle(book, toc);
   });
   $('#readerArticle')?.addEventListener('click', e => {
+    const impPhrase = e.target.closest('.rd-imp-phrase');
+    if (impPhrase && e.target.closest('.rd-en, .rd-para')) {
+      scrollReaderPhraseIntoView(impPhrase.dataset.impPhrase || plainEnText(impPhrase));
+      return;
+    }
+    const impWord = e.target.closest('.rd-imp-word');
+    if (impWord && e.target.closest('.rd-en, .rd-para')) {
+      scrollReaderVocabIntoView(impWord.dataset.impWord || plainEnText(impWord));
+      return;
+    }
     const paraAi = e.target.closest('.rd-para-ai');
     if (paraAi) {
       const book = readerBooks.find(b => b.id === readerCurrentBookId);
@@ -5915,6 +5950,16 @@ function bindListen() {
   });
   $('#listenTranscript')?.addEventListener('click', e => {
     if (e.target.closest('.speak-btn')) return;
+    const impPhrase = e.target.closest('.rd-imp-phrase');
+    if (impPhrase) {
+      scrollListenPhraseIntoView(impPhrase.dataset.impPhrase || plainEnText(impPhrase));
+      return;
+    }
+    const impWord = e.target.closest('.rd-imp-word');
+    if (impWord) {
+      scrollListenVocabIntoView(impWord.dataset.impWord || plainEnText(impWord));
+      return;
+    }
     const seg = e.target.closest('.ls-seg');
     if (seg) listenSeekTo(parseFloat(seg.dataset.start) || 0);
   });
