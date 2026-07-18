@@ -951,9 +951,86 @@ const _list = (props, itemRequired) => {
 // 每段共用的原始內容說明
 function rawBlock(raw) {
   return raw
-    ? `以下是使用者從歐路詞典複製貼上的原始內容（可能雜亂、有重複或無關文字，請判讀後取用）：\n"""\n${raw}\n"""`
-    : '（使用者沒有提供字典內容，請依你自己的知識整理。）';
+    ? `以下是從詞典／使用者提供的補充內容（可能雜亂、有重複或無關文字，請判讀後取用；優先採用標示來源的釋義、例句、詞源）：\n"""\n${raw}\n"""`
+    : '（沒有詞典補充內容，請依你自己的知識整理。）';
 }
+
+/** 從 Free Dictionary API（瀏覽器可直連）抓英文釋義當後備 */
+async function fetchFreeDictionaryRaw(word) {
+  try {
+    const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`);
+    if (!res.ok) return '';
+    const data = await res.json();
+    const lines = ['【Free Dictionary】'];
+    for (const en of data || []) {
+      if (en.phonetic) lines.push(`音標 ${en.phonetic}`);
+      for (const m of en.meanings || []) {
+        lines.push(`詞性 ${m.partOfSpeech || ''}`);
+        for (const d of (m.definitions || []).slice(0, 4)) {
+          lines.push(`- ${d.definition || ''}`);
+          if (d.example) lines.push(`  例：${d.example}`);
+        }
+        for (const s of (m.synonyms || []).slice(0, 6)) lines.push(`同義 ${s}`);
+      }
+    }
+    const text = lines.join('\n').trim();
+    return text.length > 80 ? text.slice(0, 4000) : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 未貼歐路內容時，自動從劍橋／柯林斯／朗文／歐路／Etymonline 抓補充。
+ * 優先 Vercel /api/dict-fetch，其次聽力後端，最後 Free Dictionary。
+ */
+async function fetchOnlineDictRaw(word, onStatus) {
+  const w = String(word || '').trim();
+  if (!w || currentLang !== 'en') return '';
+  const report = (msg) => { if (typeof onStatus === 'function') onStatus(msg); };
+
+  const tryJson = async (url) => {
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const j = await res.json();
+    if (j && j.text) return j;
+    throw new Error('empty');
+  };
+
+  report('正在從線上詞典抓取補充（劍橋／柯林斯／朗文／歐路／Etymonline）…');
+  // 1) Vercel serverless
+  try {
+    const j = await tryJson(`/api/dict-fetch?word=${encodeURIComponent(w)}`);
+    const okN = (j.sources || []).filter(s => s.ok).length;
+    report(`已抓到 ${okN} 個詞典來源，開始 AI 整理…`);
+    return j.text;
+  } catch (e) {
+    console.warn('dict-fetch (vercel) failed', e);
+  }
+  // 2) 聽力 Cloud Run 後端
+  try {
+    const j = await tryJson(`${listenBackend()}/beidanzi/dict_fetch?word=${encodeURIComponent(w)}`);
+    const okN = (j.sources || []).filter(s => s.ok).length;
+    report(`已抓到 ${okN} 個詞典來源，開始 AI 整理…`);
+    return j.text;
+  } catch (e) {
+    console.warn('dict-fetch (backend) failed', e);
+  }
+  // 3) 瀏覽器直連 Free Dictionary
+  report('線上詞典代理失敗，改用 Free Dictionary…');
+  const free = await fetchFreeDictionaryRaw(w);
+  if (free) return free;
+  report('無法抓取線上詞典，改由 AI 依自身知識整理…');
+  return '';
+}
+
+/** 若使用者未貼補充，自動抓線上詞典；有貼則原樣使用 */
+async function resolveCardRaw(word, raw, onStatus) {
+  const pasted = String(raw || '').trim();
+  if (pasted) return pasted;
+  return (await fetchOnlineDictRaw(word, onStatus)) || '';
+}
+
 
 /** 清洗音標：只保留短 IPA，擋掉模型把說明文字塞進音標欄 */
 function cleanPhonetic(s) {
@@ -1337,14 +1414,20 @@ async function regenerateSegment(segKey, btn) {
   const seg = SEGMENTS.find(s => s.key === segKey);
   if (!seg) return;
   const { data, container, word } = currentEntry;
+  btn.disabled = true;
+  const oldHtml = btn.innerHTML;
   // 用最新的原文（新增頁讀 #rawInput；背誦/彈窗編輯則沿用該卡原文）
   const onAddPage = container && container.id === 'previewArea';
-  const raw = onAddPage ? $('#rawInput').value.trim() : (currentEntry.raw || '');
+  let raw = onAddPage ? $('#rawInput').value.trim() : (currentEntry.raw || '');
+  if (!raw) {
+    try {
+      raw = await resolveCardRaw(word, '', msg => { btn.innerHTML = `<span class="spinner"></span> ${esc(msg)}`; });
+      if (raw && onAddPage) $('#rawInput').value = raw;
+    } catch { /* 略過 */ }
+  }
   currentEntry.raw = raw;
   if (currentEntry.card) { currentEntry.card.raw = raw; saveCards(); }
 
-  btn.disabled = true;
-  const oldHtml = btn.innerHTML;
   btn.innerHTML = '<span class="spinner"></span> 生成中';
   try {
     const part = await generateSegmentJSON(seg, word, raw);
@@ -1369,7 +1452,7 @@ async function regenerateSegment(segKey, btn) {
 
 async function onGenerate() {
   const word = $('#wordInput').value.trim();
-  const raw = $('#rawInput').value.trim();
+  let raw = $('#rawInput').value.trim();
   if (!word) { toast('請先輸入單字', true); $('#wordInput').focus(); return; }
 
   if (findExistingCard(word) && !confirm(`「${word}」已經在詞庫中了，仍要重新整理一張新的嗎？`)) return;
@@ -1383,6 +1466,15 @@ async function onGenerate() {
   $('#saveCardBtn').hidden = true;
 
   try {
+    if (!raw) {
+      raw = await resolveCardRaw(word, '', msg => {
+        status.innerHTML = `<span class="spinner"></span> ${esc(msg)}`;
+      });
+      if (raw) {
+        $('#rawInput').value = raw;
+        toast('已自動抓取線上詞典補充');
+      }
+    }
     const result = await callGemini(word, raw, (done, total) => {
       status.innerHTML = `<span class="spinner"></span> 分段整理中… (${done}/${total} 段完成)`;
     });
@@ -1495,6 +1587,11 @@ async function runBatchItem(it) {
   batchActive++;
   renderBatch();
   try {
+    if (!(it.raw || '').trim()) {
+      it.prog = '詞典';
+      renderBatch();
+      it.raw = await resolveCardRaw(it.word, '', () => {});
+    }
     const data = await callGemini(it.word, it.raw, (done, total) => {
       it.prog = `${done}/${total}`;
       renderBatch();
@@ -4389,7 +4486,7 @@ function closeReaderAdd() {
 }
 async function readerDoAdd() {
   const word = $('#raddWord').value.trim();
-  const raw = $('#raddRaw').value.trim();
+  let raw = $('#raddRaw').value.trim();
   if (!word) { toast('請輸入單字', true); return; }
   const status = $('#raddStatus');
   const btn = $('#raddGenBtn');
@@ -4397,6 +4494,12 @@ async function readerDoAdd() {
   status.innerHTML = '<span class="spinner"></span> 整理中…';
   btn.disabled = true;
   try {
+    if (!raw) {
+      raw = await resolveCardRaw(word, '', msg => {
+        status.innerHTML = `<span class="spinner"></span> ${esc(msg)}`;
+      });
+      if (raw) $('#raddRaw').value = raw;
+    }
     const data = await callGemini(word, raw);
     const card = addCardFromData(data, raw);
     saveCards();

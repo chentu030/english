@@ -112,8 +112,8 @@
             <input type="text" id="wordInput" placeholder="例如：concur" autocomplete="off" />
           </label>
           <label class="field">
-            <span class="field-label">貼上歐路詞典搜尋結果（可整段貼上，越完整越好）</span>
-            <textarea id="rawInput" rows="14" placeholder="把歐路詞典（英漢、劍橋英英、有道、柯林斯、例句…）整段複製貼到這裡。也可以只貼單字讓 AI 自行整理。"></textarea>
+            <span class="field-label">貼上歐路詞典搜尋結果（可留空＝自動抓線上詞典）</span>
+            <textarea id="rawInput" rows="14" placeholder="可整段貼上歐路／劍橋／柯林斯內容。若留空，會自動去劍橋、柯林斯、朗文、歐路、Etymonline 抓補充再整理。"></textarea>
           </label>
           <div class="add-btns">
             <button class="btn primary" id="generateBtn">🤖 用 Gemini 整理</button>
@@ -148,8 +148,8 @@
             <input type="text" id="batchWord" placeholder="例如：concur" autocomplete="off" />
           </label>
           <label class="field">
-            <span class="field-label">貼上歐路詞典內容（可留空讓 AI 自行整理）</span>
-            <textarea id="batchRaw" rows="12" placeholder="貼上歐路詞典內容，按 Ctrl+Enter 快速加入佇列"></textarea>
+            <span class="field-label">貼上歐路詞典內容（可留空＝自動抓線上詞典）</span>
+            <textarea id="batchRaw" rows="12" placeholder="可貼上詞典內容；留空會自動抓劍橋／柯林斯／朗文／歐路／Etymonline。Ctrl+Enter 加入佇列"></textarea>
           </label>
           <label class="field">
             <span class="field-label">加入到資料夾</span>
@@ -427,8 +427,8 @@
           <input type="text" id="raddWord" autocomplete="off" />
         </label>
         <label class="field">
-          <span class="field-label">貼上歐路詞典內容（可留空讓 AI 自行整理，貼上更完整）</span>
-          <textarea id="raddRaw" rows="8" placeholder="把歐路詞典整段貼上，讓整理更完整。也可以留空。"></textarea>
+          <span class="field-label">貼上歐路詞典內容（可留空＝自動抓線上詞典）</span>
+          <textarea id="raddRaw" rows="8" placeholder="可貼上歐路內容；留空會自動抓線上詞典再整理。"></textarea>
         </label>
         <p class="hint" id="raddExample"></p>
         <div class="add-btns">
