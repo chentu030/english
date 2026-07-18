@@ -285,9 +285,13 @@ function pcmB64ToWavUrl(b64, sampleRate) {
   return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
 }
 // 生成單段 AI 語音，回傳 { b64, rate } 或 null（不播放）
-async function geminiTTSChunk(text) {
-  const keys = activeKeys();
-  if (!keys.length || !text) return null;
+// preferredKey：並行時指定先用哪一把金鑰，避免多請求搶同一把
+async function geminiTTSChunk(text, preferredKey) {
+  const all = activeKeys();
+  if (!all.length || !text) return null;
+  const keys = preferredKey
+    ? [preferredKey, ...all.filter(k => k !== preferredKey)]
+    : all;
   const body = {
     contents: [{ role: 'user', parts: [{ text }] }],
     generationConfig: {
@@ -297,8 +301,7 @@ async function geminiTTSChunk(text) {
   };
   for (const model of TTS_MODELS) {
     for (let attempt = 0; attempt < keys.length; attempt++) {
-      const key = keys[keyIndex % keys.length];
-      keyIndex = (keyIndex + 1) % keys.length;
+      const key = keys[attempt];
       try {
         const url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
         const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -315,6 +318,22 @@ async function geminiTTSChunk(text) {
     }
   }
   return null;
+}
+
+// 固定並行度的 map（用來讓多把 API 金鑰同時生成語音）
+async function mapPool(items, concurrency, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const n = Math.max(1, Math.min(concurrency, items.length));
+  async function worker() {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: n }, () => worker()));
+  return results;
 }
 
 function b64ToBytes(b64) {
@@ -336,6 +355,9 @@ function pcmChunksToWavBlob(chunks, sampleRate) {
   let off = 44;
   for (const c of chunks) { new Uint8Array(buffer, off, c.length).set(c); off += c.length; }
   return new Blob([buffer], { type: 'audio/wav' });
+}
+function pcmDurationSec(bytes, sampleRate) {
+  return (bytes.length / 2) / (sampleRate || 24000); // 16-bit mono
 }
 
 let ttsBusy = false;
@@ -2837,16 +2859,21 @@ function renderBookList() {
 function renderBook(book) {
   $('#readerBookTitle').textContent = book.title;
   const toc = $('#readerToc');
+  const head = `<div class="rd-toc-head">
+      <span>目錄（${(book.toc || []).length}）</span>
+      <button class="btn ghost small" id="readerAddTocBtn" type="button" title="貼上文字新增一篇文章到這本書">＋ 新增</button>
+    </div>`;
   if ((book.toc || []).length === 0) {
-    toc.innerHTML = '<p class="hint" style="padding:10px">目錄整理中或無目錄…</p>';
+    toc.innerHTML = head + '<p class="hint" style="padding:10px">尚無目錄。可按上方「＋ 新增」貼上文章，或重新上傳 PDF 讓 AI 整理。</p>';
   } else {
-    toc.innerHTML = `<div class="rd-toc-head">目錄（${book.toc.length}）</div>` + book.toc.map(t => {
+    toc.innerHTML = head + book.toc.map(t => {
       const processed = book.articles && book.articles[t.id];
       const active = t.id === readerCurrentTocId ? ' active' : '';
+      const flag = processed ? '✅' : (t.customBody ? '✍️' : (t.page ? 'p.' + t.page : ''));
       return `<button class="rd-toc-item${active}" data-toc="${t.id}">
         <span class="rd-toc-title">${esc(t.title)}</span>
         ${t.section ? `<span class="rd-toc-sec">${esc(t.section)}</span>` : ''}
-        <span class="rd-toc-flag">${processed ? '✅' : (t.page ? 'p.' + t.page : '')}</span>
+        <span class="rd-toc-flag">${flag}</span>
       </button>`;
     }).join('');
   }
@@ -2943,16 +2970,35 @@ async function readerBuildToc(pages) {
   }
 }
 
-function openReaderPaste() {
+let readerPasteMode = 'book'; // 'book' = 新建一本書；'toc' = 加到目前這本書的目錄
+function openReaderPaste(mode = 'book') {
+  readerPasteMode = mode === 'toc' ? 'toc' : 'book';
   $('#rpasteTitle').value = '';
   $('#rpasteBody').value = '';
+  const titleEl = $('#rpasteModalTitle');
+  const hint = $('#rpasteHint');
+  const confirmBtn = $('#rpasteConfirm');
+  if (readerPasteMode === 'toc') {
+    const book = readerBooks.find(b => b.id === readerCurrentBookId);
+    if (titleEl) titleEl.textContent = '新增文章到目錄';
+    if (hint) {
+      hint.hidden = false;
+      hint.textContent = book ? `將加進《${book.title}》的目錄，貼上後即可開始精讀。` : '';
+    }
+    if (confirmBtn) confirmBtn.textContent = '加入並精讀';
+  } else {
+    if (titleEl) titleEl.textContent = '貼上文章';
+    if (hint) { hint.hidden = true; hint.textContent = ''; }
+    if (confirmBtn) confirmBtn.textContent = '開始精讀';
+  }
   $('#readerPasteModal').hidden = false;
   document.body.classList.add('modal-open');
-  $('#rpasteBody').focus();
+  $('#rpasteTitle').focus();
 }
 function closeReaderPaste() {
   $('#readerPasteModal').hidden = true;
   document.body.classList.remove('modal-open');
+  readerPasteMode = 'book';
 }
 
 // 正規化貼上的文章：保留段落（空行）分段，但把段內硬斷行接回、清掉多餘空白
@@ -2968,7 +3014,7 @@ function readerAddText(title, text) {
   const clean = normalizePastedText(text);
   const book = {
     id: uid(), title: title || '未命名文章', createdAt: now(), updatedAt: now(), kind: 'text',
-    pages: [clean], toc: [{ id: uid(), title: title || '未命名文章', section: '', page: 1, done: false }], articles: {},
+    pages: [clean], toc: [{ id: uid(), title: title || '未命名文章', section: '', page: 1, done: false, customBody: clean }], articles: {},
   };
   readerBooks.unshift(book);
   saveReader();
@@ -2978,6 +3024,29 @@ function readerAddText(title, text) {
   openArticle(book, book.toc[0]);
 }
 
+// 把一篇貼上的文章加進目前這本書的目錄
+function readerAddArticleToBook(book, title, text) {
+  if (!book) return;
+  const clean = normalizePastedText(text);
+  if (!clean) { toast('沒有內容', true); return; }
+  book.toc = book.toc || [];
+  book.articles = book.articles || {};
+  const entry = {
+    id: uid(),
+    title: title || '未命名文章',
+    section: '自行新增',
+    page: 0,
+    customBody: clean,
+    done: false,
+  };
+  book.toc.push(entry);
+  book.updatedAt = now();
+  saveReader();
+  renderBook(book);
+  openArticle(book, entry);
+  toast(`已加入「${entry.title}」`);
+}
+
 /* ---------- 文章精讀處理 ---------- */
 function readerFullText(book) {
   if (!book.pages || !book.pages.length) return '';
@@ -2985,6 +3054,8 @@ function readerFullText(book) {
 }
 function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function readerArticleWindow(book, toc) {
+  // 使用者自行貼上的文章：直接用原文（保留段落）
+  if (toc && toc.customBody) return toc.customBody;
   const full = readerFullText(book);
   if (!full) return '';
   if (book.kind === 'text') return full.replace(/\[P\d+\]\s*/g, '');
@@ -3024,9 +3095,9 @@ async function processArticle(book, toc) {
     return;
   }
 
-  // 1) 用 AI 清出乾淨正文（貼上／截圖的文字已乾淨，直接沿用，保留使用者段落）
+  // 1) 用 AI 清出乾淨正文（貼上／自行新增的文字已乾淨，直接沿用，保留使用者段落）
   let body = win;
-  if (book.kind === 'pdf') {
+  if (book.kind === 'pdf' && !(toc && toc.customBody)) {
     try {
       const cleanSchema = { type: 'object', properties: { article: { type: 'string' } }, required: ['article'] };
       const cleanPrompt = `以下文字擷取自 PDF，可能夾雜頁碼標記[P#]、頁首頁尾、廣告或其他文章。請找出標題約為「${toc.title}」的那篇文章，輸出它的完整正文：\n- 合併被硬斷的行、還原自然段落（段落之間用換行分隔）。\n- 移除頁碼標記、頁首頁尾、圖說、廣告與其他文章。\n- 不要翻譯、不要加入任何說明，只輸出正文文字。\n\n文字：\n${win}`;
@@ -3087,44 +3158,116 @@ async function processArticle(book, toc) {
 
 /* ---------- 朗讀整篇：瀏覽器 / AI（AI 音檔存雲端 Storage，網址存 Firestore） ---------- */
 let readerAudioEl = null;
+let readerSpeakIdx = -1;
+function clearReadingHighlight() {
+  readerSpeakIdx = -1;
+  document.querySelectorAll('.rd-para.reading').forEach(el => el.classList.remove('reading'));
+}
+function highlightReadingPara(i) {
+  if (i === readerSpeakIdx) return;
+  readerSpeakIdx = i;
+  document.querySelectorAll('.rd-para.reading').forEach(el => el.classList.remove('reading'));
+  const el = document.querySelector(`.rd-para[data-pi="${i}"]`);
+  if (el) {
+    el.classList.add('reading');
+    try { el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch {}
+  }
+}
 function readerStopAudio() {
   if (readerAudioEl) { try { readerAudioEl.pause(); } catch {} readerAudioEl = null; }
   if (window.speechSynthesis) window.speechSynthesis.cancel();
+  clearReadingHighlight();
 }
-function readerPlayUrl(url) {
+function readerPlayUrl(url, cues) {
   readerStopAudio();
   readerAudioEl = new Audio(url);
+  if (cues && cues.length) {
+    readerAudioEl.addEventListener('timeupdate', () => {
+      const t = readerAudioEl.currentTime;
+      let hit = cues[0];
+      for (const c of cues) { if (t >= c.start) hit = c; else break; }
+      if (hit) highlightReadingPara(hit.i);
+    });
+  }
+  readerAudioEl.addEventListener('ended', clearReadingHighlight);
   readerAudioEl.play().catch(e => toast('播放失敗：' + e.message, true));
 }
-// 把文章逐段英文切成適合 TTS 的段落（每段約 1200 字內）
-function ttsChunksFromArticle(a) {
-  const paras = (a.paragraphs || []).map(p => (p.en || '').trim()).filter(Boolean);
-  const chunks = []; let cur = '';
-  for (const p of paras) {
-    if (cur && (cur.length + p.length + 1) > 1200) { chunks.push(cur); cur = ''; }
-    cur += (cur ? '\n' : '') + p;
-  }
-  if (cur) chunks.push(cur);
-  return chunks;
+
+// 瀏覽器逐段朗讀，並用藍色底標示當前段
+function speakArticleWithHighlight(a) {
+  if (!window.speechSynthesis) { toast('這個瀏覽器不支援朗讀', true); return; }
+  readerStopAudio();
+  const jobs = (a.paragraphs || []).map((p, i) => ({ i, text: (p.en || '').trim() })).filter(j => j.text);
+  if (!jobs.length) { toast('沒有內容可朗讀', true); return; }
+  let n = 0;
+  const next = () => {
+    if (n >= jobs.length) { clearReadingHighlight(); return; }
+    const job = jobs[n++];
+    highlightReadingPara(job.i);
+    const u = makeUtterance(job.text, TARGET_LANG());
+    u.onend = next;
+    u.onerror = next;
+    window.speechSynthesis.speak(u);
+  };
+  next();
 }
+
+// 依段落產生 TTS 工作（過長段落再切句，方便並行）
+function ttsJobsFromArticle(a) {
+  const jobs = [];
+  (a.paragraphs || []).forEach((p, i) => {
+    const text = (p.en || '').trim();
+    if (!text) return;
+    if (text.length <= 1400) { jobs.push({ i, text }); return; }
+    const parts = text.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) || [text];
+    let cur = '';
+    for (const s of parts) {
+      if (cur && (cur.length + s.length) > 1200) { jobs.push({ i, text: cur.trim() }); cur = ''; }
+      cur += s;
+    }
+    if (cur.trim()) jobs.push({ i, text: cur.trim() });
+  });
+  return jobs;
+}
+
 let readerTtsBusy = false;
 async function readerPlayAI(book, a) {
-  if (a.audioUrl) { readerPlayUrl(a.audioUrl); return; }
+  if (a.audioUrl) { readerPlayUrl(a.audioUrl, a.audioCues); return; }
   if (readerTtsBusy) { toast('AI 語音生成中，請稍候…'); return; }
   if (!activeKeys().length) { toast('尚未設定 API 金鑰', true); return; }
-  const chunks = ttsChunksFromArticle(a);
-  if (!chunks.length) { toast('沒有內容可朗讀', true); return; }
+  const jobs = ttsJobsFromArticle(a);
+  if (!jobs.length) { toast('沒有內容可朗讀', true); return; }
   readerTtsBusy = true;
   const btn = $('#rdReadAi');
   const setLabel = t => { if (btn) btn.textContent = t; };
+  const keys = activeKeys();
+  const concurrency = Math.max(1, keys.length); // 有幾把金鑰就同時跑幾路
+  let done = 0;
   try {
-    const pcms = []; let rate = 24000;
-    for (let i = 0; i < chunks.length; i++) {
-      setLabel(`🤖 生成中 ${i + 1}/${chunks.length}…`);
-      const r = await geminiTTSChunk(chunks[i]);
-      if (!r) { toast('AI 語音生成失敗（可改用瀏覽器朗讀）', true); setLabel('🤖 AI 朗讀整篇'); return; }
-      pcms.push(b64ToBytes(r.b64)); rate = r.rate;
+    setLabel(`🤖 並行生成 0/${jobs.length}（${concurrency} 路）…`);
+    const results = await mapPool(jobs, concurrency, async (job, jobIdx) => {
+      const key = keys[jobIdx % keys.length];
+      const r = await geminiTTSChunk(job.text, key);
+      done++;
+      setLabel(`🤖 並行生成 ${done}/${jobs.length}（${concurrency} 路）…`);
+      return r;
+    });
+    if (results.some(r => !r)) {
+      toast('AI 語音生成失敗（可改用瀏覽器朗讀）', true);
+      setLabel('🤖 AI 朗讀整篇');
+      return;
     }
+    const rate = results[0].rate || 24000;
+    const pcms = [];
+    const cues = [];
+    let t = 0;
+    results.forEach((r, idx) => {
+      const bytes = b64ToBytes(r.b64);
+      const dur = pcmDurationSec(bytes, r.rate || rate);
+      cues.push({ i: jobs[idx].i, start: t, end: t + dur });
+      t += dur;
+      pcms.push(bytes);
+    });
     const blob = pcmChunksToWavBlob(pcms, rate);
     setLabel('☁️ 保存中…');
     try {
@@ -3133,14 +3276,16 @@ async function readerPlayAI(book, a) {
       const res = await fetch(listenBackend() + '/beidanzi/store_audio', { method: 'POST', body: fd });
       if (!res.ok) throw new Error('狀態 ' + res.status);
       const j = await res.json();
-      a.audioUrl = j.url; book.updatedAt = now(); saveReader();
+      a.audioUrl = j.url;
+      a.audioCues = cues;
+      book.updatedAt = now(); saveReader();
       setLabel('▶️ 播放 AI 語音');
-      readerPlayUrl(a.audioUrl);
-      toast('AI 語音完成，已保存雲端');
+      readerPlayUrl(a.audioUrl, a.audioCues);
+      toast(`AI 語音完成（${concurrency} 路並行），已保存雲端`);
     } catch (e) {
-      // 雲端保存失敗 → 先用本機 blob 播放（不保存）
       setLabel('🤖 AI 朗讀整篇');
-      readerPlayUrl(URL.createObjectURL(blob));
+      a.audioCues = cues;
+      readerPlayUrl(URL.createObjectURL(blob), cues);
       toast('雲端保存失敗，先本機播放：' + e.message, true);
     }
   } finally { readerTtsBusy = false; }
@@ -3173,9 +3318,9 @@ function highlightKnown(text, re) {
 function renderArticle(book, a) {
   const el = $('#readerArticle');
   const re = buildKnownWordRegex();
-  const paras = (a.paragraphs || []).map(p => {
+  const paras = (a.paragraphs || []).map((p, i) => {
     const en = highlightKnown(p.en || '', re);
-    return `<div class="rd-para">
+    return `<div class="rd-para" data-pi="${i}">
       <p class="rd-en">${en} <button class="speak-btn rd-para-spk" data-speak="${esc(p.en || '')}" data-src="browser" title="朗讀此段" type="button">🔊</button></p>
       <p class="rd-zh">${esc(p.zh || '')}</p>
     </div>`;
@@ -3354,14 +3499,24 @@ function bindReader() {
     if (f) readerAddPdf(f);
     e.target.value = '';
   });
-  $('#readerPasteBtn')?.addEventListener('click', openReaderPaste);
+  $('#readerPasteBtn')?.addEventListener('click', () => openReaderPaste('book'));
   $('#readerPasteModal')?.addEventListener('click', e => { if (e.target.closest('[data-close-rpaste]')) closeReaderPaste(); });
   $('#rpasteConfirm')?.addEventListener('click', () => {
     const title = ($('#rpasteTitle').value || '').trim();
     const text = ($('#rpasteBody').value || '');
     if (!text.trim()) { toast('沒有內容', true); return; }
+    const mode = readerPasteMode;
     closeReaderPaste();
-    readerAddText(title || '未命名文章', text);
+    if (mode === 'toc') {
+      const book = readerBooks.find(b => b.id === readerCurrentBookId);
+      if (!book) { toast('找不到目前書本', true); return; }
+      readerAddArticleToBook(book, title || '未命名文章', text);
+    } else {
+      readerAddText(title || '未命名文章', text);
+    }
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && $('#readerPasteModal') && !$('#readerPasteModal').hidden) closeReaderPaste();
   });
   $('#readerImgFile')?.addEventListener('change', async e => {
     const f = e.target.files && e.target.files[0];
@@ -3403,6 +3558,11 @@ function bindReader() {
     if (b) { readerCurrentBookId = b.dataset.book; readerCurrentTocId = null; renderReader(); }
   });
   $('#readerToc')?.addEventListener('click', e => {
+    if (e.target.closest('#readerAddTocBtn')) {
+      if (!readerCurrentBookId) { toast('請先開啟一本書', true); return; }
+      openReaderPaste('toc');
+      return;
+    }
     const item = e.target.closest('[data-toc]');
     if (!item) return;
     const book = readerBooks.find(b => b.id === readerCurrentBookId);
@@ -3415,10 +3575,9 @@ function bindReader() {
     const add = e.target.closest('.rd-add-vocab');
     if (add) { openReaderAdd(add.dataset.word, add.dataset.ex); return; }
     if (e.target.closest('#rdReadAll')) {
-      readerStopAudio();
       const book = readerBooks.find(b => b.id === readerCurrentBookId);
       const a = book && book.articles && book.articles[readerCurrentTocId];
-      if (a) speakSequence((a.paragraphs || []).map(p => ({ text: p.en, lang: TARGET_LANG() })));
+      if (a) speakArticleWithHighlight(a);
       return;
     }
     if (e.target.closest('#rdReadAi')) {

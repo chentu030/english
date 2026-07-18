@@ -440,12 +440,13 @@
     <div class="modal-overlay" data-close-rpaste></div>
     <div class="modal-box" role="dialog" aria-modal="true">
       <div class="modal-header">
-        <span class="modal-title">貼上文章</span>
+        <span class="modal-title" id="rpasteModalTitle">貼上文章</span>
         <div class="modal-actions">
           <button class="modal-close" id="rpasteCloseBtn" title="關閉" data-close-rpaste>✕</button>
         </div>
       </div>
       <div class="modal-body">
+        <p class="hint" id="rpasteHint" hidden></p>
         <label class="field">
           <span class="field-label">文章標題</span>
           <input type="text" id="rpasteTitle" autocomplete="off" placeholder="例如：文章來源或主題" />
