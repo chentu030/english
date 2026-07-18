@@ -4964,6 +4964,7 @@ async function listenAddYoutube(url, opts = {}) {
     const isCc = item.captionSource === 'manual' || item.captionSource === 'auto';
     item.segments = mapListenCaptionSegments(j.segments || [], { dedupe: isCc || !forceWhisper });
     item.captionsDeduped = true;
+    item.captionsSentenceMerged = true;
     saveListen();
     renderListenList();
     setHint('');
