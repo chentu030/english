@@ -2725,6 +2725,8 @@ function enqueueUnlockedModes(card) {
 }
 
 function showCurrentCard() {
+  // 換卡時立刻中斷上一張的朗讀
+  stopStudySpeech();
   // 換卡時關閉編輯面板
   if (studyEditing) {
     studyEditing = false;
@@ -2759,7 +2761,7 @@ function showCurrentCard() {
       });
     }
   }
-  // 切到新卡自動朗讀：單字＋中文解釋（克漏字念整句），皆用瀏覽器語音
+  // 切到新卡：只朗讀題面（不洩漏答案）
   autoSpeakFront(card.data, item.mode);
 }
 
@@ -3054,6 +3056,7 @@ function rateCard(rate) {
 }
 
 function finishStudy() {
+  stopStudySpeech();
   $('#studyCard').hidden = true;
   $('#studyDone').hidden = false;
   renderSummary();
