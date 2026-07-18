@@ -4040,13 +4040,172 @@ function renderListenList() {
 }
 
 /* ---------- 建立聽力：上傳檔案 / YouTube（雲端 Cloud Run + Replicate） ---------- */
+/** 清除 YouTube CC 滾動字幕重複（同一句寫兩三次） */
+function longestSuffixPrefixOverlap(a, b) {
+  const maxN = Math.min(a.length, b.length);
+  for (let n = maxN; n > 0; n--) {
+    if (a.slice(-n) !== b.slice(0, n)) continue;
+    if (n === a.length || n === b.length || a.slice(-n).startsWith(' ')
+      || (a.length > n && a[a.length - n - 1] === ' ')
+      || (n < b.length && b[n] === ' ')) return a.slice(-n);
+  }
+  for (let n = maxN; n > 7; n--) {
+    if (a.slice(-n) === b.slice(0, n)) return a.slice(-n);
+  }
+  return '';
+}
+function dedupeRollupCaptions(segs) {
+  const out = [];
+  for (const seg of segs || []) {
+    let text = String(seg.text || seg.en || '').replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+    const start = Number(seg.start) || 0;
+    const end = seg.end != null ? Number(seg.end) : start;
+    if (!out.length) {
+      out.push({ start: +start.toFixed(2), end: +end.toFixed(2), text });
+      continue;
+    }
+    const prev = out[out.length - 1];
+    const a = prev.text;
+    let b = text;
+    if (b === a) { prev.end = Math.max(prev.end, +end.toFixed(2)); continue; }
+    if (b.startsWith(a) && (start - prev.start <= 12)) {
+      prev.text = b; prev.end = Math.max(prev.end, +end.toFixed(2)); continue;
+    }
+    if (a.startsWith(b) || a.includes(b)) {
+      prev.end = Math.max(prev.end, +end.toFixed(2)); continue;
+    }
+    if (b.includes(a) && a.length >= 8) {
+      const idx = b.indexOf(a);
+      if (idx === 0) {
+        prev.text = b; prev.end = Math.max(prev.end, +end.toFixed(2)); continue;
+      }
+      if (out.length >= 2) {
+        const prev2 = out[out.length - 2];
+        const prefix = b.slice(0, idx).trim();
+        if (prefix && (prev2.text === prefix || prefix.startsWith(prev2.text) || prefix.includes(prev2.text))) {
+          prev2.text = b;
+          prev2.end = Math.max(prev2.end, +end.toFixed(2));
+          out.pop();
+          continue;
+        }
+      }
+      prev.text = b;
+      prev.start = Math.min(prev.start, +start.toFixed(2));
+      prev.end = Math.max(prev.end, +end.toFixed(2));
+      continue;
+    }
+    const ov = longestSuffixPrefixOverlap(a, b);
+    const minOv = Math.min(10, Math.max(6, Math.floor(Math.min(a.length, b.length) / 4)));
+    if (ov.length >= minOv) {
+      const delta = b.slice(ov.length).trim();
+      if (!delta) { prev.end = Math.max(prev.end, +end.toFixed(2)); continue; }
+      b = delta;
+    }
+    out.push({ start: +start.toFixed(2), end: +end.toFixed(2), text: b });
+  }
+  return out;
+}
+function mapListenCaptionSegments(rawSegs, { dedupe = true } = {}) {
+  const base = (rawSegs || []).map(s => ({
+    start: s.start, end: s.end, text: (s.text || s.en || '').trim(), zh: s.zh || '',
+  }));
+  const cleaned = dedupe ? dedupeRollupCaptions(base) : base;
+  const zhMap = new Map();
+  base.forEach(s => { if (s.text && s.zh) zhMap.set(s.text, s.zh); });
+  return cleaned.map(s => ({
+    start: s.start, end: s.end, en: s.text, zh: zhMap.get(s.text) || s.zh || '',
+  }));
+}
+/** 開啟舊項目時清一次 CC 滾動重複（已標記則略過） */
+function ensureListenCaptionsClean(item) {
+  if (!item || item.captionsDeduped) return false;
+  item.captionsDeduped = true;
+  if (item.captionSource === 'whisper') return false;
+  const segs = item.segments || [];
+  if (segs.length < 3) { saveListenLocal(); return false; }
+  const cleaned = mapListenCaptionSegments(segs.map(s => ({ start: s.start, end: s.end, text: s.en, zh: s.zh })));
+  if (cleaned.length >= segs.length * 0.92) { saveListenLocal(); return false; }
+  item.segments = cleaned;
+  item.updatedAt = now();
+  saveListen();
+  toast(`已清除 CC 重複字幕（${segs.length} → ${cleaned.length} 段）；若中文對不齊請再按「瀏覽器翻譯」`);
+  return true;
+}
+
+let listenJobQueue = [];
+let listenJobsActive = 0;
+let listenJobsDone = 0;
+let listenJobsFail = 0;
+const LISTEN_JOB_CONCURRENCY = 1;
+
+function updateListenQueueHint() {
+  const el = $('#listenQueueHint');
+  if (!el) return;
+  const pending = listenJobQueue.length;
+  const active = listenJobsActive;
+  if (!pending && !active) {
+    if (listenJobsDone || listenJobsFail) {
+      el.hidden = false;
+      el.textContent = `批次完成：成功 ${listenJobsDone}、失敗 ${listenJobsFail}`;
+      listenJobsDone = 0; listenJobsFail = 0;
+    } else {
+      el.hidden = true; el.textContent = '';
+    }
+    return;
+  }
+  el.hidden = false;
+  el.textContent = `批次處理中：進行 ${active}、佇列 ${pending}`
+    + (listenJobsDone || listenJobsFail ? `（已完成 ${listenJobsDone}${listenJobsFail ? '／失敗 ' + listenJobsFail : ''}）` : '')
+    + ' — 可離開此頁以外的分頁，但請勿關閉網站';
+}
+
+function pumpListenJobQueue() {
+  updateListenQueueHint();
+  while (listenJobsActive < LISTEN_JOB_CONCURRENCY && listenJobQueue.length) {
+    const job = listenJobQueue.shift();
+    listenJobsActive++;
+    updateListenQueueHint();
+    (async () => {
+      try {
+        if (job.type === 'file') await listenUploadFile(job.file, { open: false, quiet: true });
+        else await listenAddYoutube(job.url, { ...job.opts, open: false, quiet: true });
+        listenJobsDone++;
+      } catch {
+        listenJobsFail++;
+      } finally {
+        listenJobsActive--;
+        pumpListenJobQueue();
+      }
+    })();
+  }
+  if (!listenJobsActive && !listenJobQueue.length) updateListenQueueHint();
+}
+
+function enqueueListenFiles(fileList) {
+  const files = [...(fileList || [])].filter(Boolean);
+  if (!files.length) return;
+  files.forEach(f => listenJobQueue.push({ type: 'file', file: f }));
+  toast(`已加入 ${files.length} 個檔案到批次佇列`);
+  pumpListenJobQueue();
+}
+function enqueueListenYoutubeUrls(urls, opts = {}) {
+  const list = [...new Set((urls || []).map(u => String(u || '').trim()).filter(Boolean))];
+  if (!list.length) return;
+  list.forEach(url => listenJobQueue.push({ type: 'youtube', url, opts: { ...opts } }));
+  toast(`已加入 ${list.length} 個 YouTube 到批次佇列`);
+  pumpListenJobQueue();
+}
+
 // 轉錄完成後統一做翻譯 + 重點分析
-async function listenAfterTranscribe(item) {
+async function listenAfterTranscribe(item, opts = {}) {
+  const quiet = !!opts.quiet;
   const side = $('#listenSide');
   const showStage = (txt) => { if (side && listenCurrentId === item.id) side.innerHTML = `<div class="ls-processing"><span class="spinner"></span> ${esc(txt)}</div>`; };
   item.status = 'translating';
   saveListen();
   if (listenCurrentId === item.id) renderListenItem(item); // 先顯示英文與播放器
+  else renderListenList();
   if (item.translatePrefer === 'gemini') await translateListenGemini(item, showStage);
   else await translateListenBrowser(item, showStage);
   await analyzeListen(item, showStage);
@@ -4054,7 +4213,7 @@ async function listenAfterTranscribe(item) {
   saveListen();
   if (listenCurrentId === item.id) renderListenItem(item);
   renderListenList();
-  toast('聽力精聽整理完成');
+  if (!quiet) toast('聽力精聽整理完成');
 }
 
 /** 單句：Chrome/Edge Translator API（若可用） */
@@ -4264,7 +4423,8 @@ async function listenForceCc(item) {
     }
     item.captionSource = j.captionSource || 'auto';
     if (j.title) item.title = j.title;
-    item.segments = (j.segments || []).map(s => ({ start: s.start, end: s.end, en: (s.text || '').trim(), zh: '' }));
+    item.segments = mapListenCaptionSegments(j.segments || []);
+    item.captionsDeduped = true;
     item.summary = ''; item.vocab = []; item.phrases = []; item.grammar = []; item.mindmap = null;
     item.updatedAt = now();
     saveListen();
@@ -4319,7 +4479,8 @@ async function listenForceWhisper(item) {
     const j = await res.json();
     item.captionSource = j.captionSource || 'whisper';
     if (j.title) item.title = j.title;
-    item.segments = (j.segments || []).map(s => ({ start: s.start, end: s.end, en: (s.text || '').trim(), zh: '' }));
+    item.segments = mapListenCaptionSegments(j.segments || [], { dedupe: false });
+    item.captionsDeduped = true;
     item.summary = ''; item.vocab = []; item.phrases = []; item.grammar = []; item.mindmap = null;
     item.updatedAt = now();
     saveListen();
@@ -4345,10 +4506,12 @@ async function translateListen(item, showStage) {
   return translateListenBrowser(item, showStage);
 }
 
-async function listenUploadFile(file) {
+async function listenUploadFile(file, opts = {}) {
   if (!file) return;
+  const open = opts.open !== false;
+  const quiet = !!opts.quiet;
   const hint = $('#listenLibHint');
-  const setHint = t => { if (hint) hint.textContent = t; };
+  const setHint = t => { if (hint && !quiet) hint.textContent = t; };
   // 先建立處理中的項目讓使用者看到進度
   const item = {
     id: uid(), title: file.name.replace(/\.[^.]+$/, ''), kind: 'file',
@@ -4358,7 +4521,8 @@ async function listenUploadFile(file) {
   };
   listenItems.unshift(item);
   saveListen();
-  listenCurrentId = item.id; renderListen();
+  if (open) { listenCurrentId = item.id; renderListen(); }
+  else renderListenList();
   try {
     setHint('上傳並雲端轉錄中…（長音檔可能需要數分鐘，請勿關閉此頁）');
     const fd = new FormData();
@@ -4369,25 +4533,29 @@ async function listenUploadFile(file) {
     const j = await res.json();
     item.mediaUrl = j.mediaUrl || '';
     item.mediaType = j.mediaType || item.mediaType;
-    item.segments = (j.segments || []).map(s => ({ start: s.start, end: s.end, en: (s.text || '').trim(), zh: '' }));
+    item.segments = mapListenCaptionSegments(j.segments || [], { dedupe: false });
+    item.captionsDeduped = true;
     saveListen();
     setHint('');
-    await listenAfterTranscribe(item);
+    await listenAfterTranscribe(item, { quiet });
   } catch (e) {
     item.status = 'error'; saveListen();
     if (listenCurrentId === item.id) renderListenItem(item);
     renderListenList();
     setHint('');
-    toast('上傳失敗：' + e.message, true);
+    if (!quiet) toast('上傳失敗：' + e.message, true);
     checkListenBackend();
+    throw e;
   }
 }
 
 async function listenAddYoutube(url, opts = {}) {
   const forceWhisper = !!opts.forceWhisper;
   const translatePrefer = opts.translatePrefer === 'gemini' ? 'gemini' : 'browser';
+  const open = opts.open !== false;
+  const quiet = !!opts.quiet;
   const hint = $('#listenLibHint');
-  const setHint = t => { if (hint) hint.textContent = t; };
+  const setHint = t => { if (hint && !quiet) hint.textContent = t; };
   const vid = (url.match(/(?:v=|youtu\.be\/|\/embed\/|\/shorts\/)([A-Za-z0-9_-]{11})/) || [])[1] || '';
   const item = {
     id: uid(), title: vid ? `讀取中…` : 'YouTube', kind: 'youtube', videoId: vid,
@@ -4397,7 +4565,8 @@ async function listenAddYoutube(url, opts = {}) {
   };
   listenItems.unshift(item);
   saveListen();
-  listenCurrentId = item.id; renderListen();
+  if (open) { listenCurrentId = item.id; renderListen(); }
+  else renderListenList();
   try {
     setHint(forceWhisper
       ? '強制 Whisper：下載音訊並掃描中…（較久）'
@@ -4421,22 +4590,27 @@ async function listenAddYoutube(url, opts = {}) {
       item.title = 'YouTube ' + (item.videoId || '');
     }
     item.captionSource = j.captionSource;
-    item.segments = (j.segments || []).map(s => ({ start: s.start, end: s.end, en: (s.text || '').trim(), zh: '' }));
+    const isCc = item.captionSource === 'manual' || item.captionSource === 'auto';
+    item.segments = mapListenCaptionSegments(j.segments || [], { dedupe: isCc || !forceWhisper });
+    item.captionsDeduped = true;
     saveListen();
     renderListenList();
     setHint('');
     const src = j.captionSource;
-    if (src === 'manual') toast('已使用 YouTube 人工字幕（未下載轉錄）');
-    else if (src === 'auto') toast('已使用 YouTube 自動字幕 CC（未下載轉錄）');
-    else if (src === 'whisper' || j.usedWhisper) toast(forceWhisper ? '已用 Whisper 掃描音軌' : '無可用字幕，已下載音訊並用 Whisper 轉錄');
-    await listenAfterTranscribe(item);
+    if (!quiet) {
+      if (src === 'manual') toast('已使用 YouTube 人工字幕（未下載轉錄）');
+      else if (src === 'auto') toast('已使用 YouTube 自動字幕 CC（未下載轉錄）');
+      else if (src === 'whisper' || j.usedWhisper) toast(forceWhisper ? '已用 Whisper 掃描音軌' : '無可用字幕，已下載音訊並用 Whisper 轉錄');
+    }
+    await listenAfterTranscribe(item, { quiet });
   } catch (e) {
     item.status = 'error'; saveListen();
     if (listenCurrentId === item.id) renderListenItem(item);
     renderListenList();
     setHint('');
-    toast('處理失敗：' + e.message, true);
+    if (!quiet) toast('處理失敗：' + e.message, true);
     checkListenBackend();
+    throw e;
   }
 }
 
@@ -4458,14 +4632,36 @@ function closeListenYoutubeModal() {
   if (modal) modal.hidden = true;
   document.body.classList.remove('modal-open');
 }
+function parseListenYoutubeUrls(raw) {
+  const text = String(raw || '');
+  const found = [];
+  const re = /https?:\/\/(?:www\.)?(?:youtube\.com\/(?:watch\?[^\s]*v=|embed\/|shorts\/)|youtu\.be\/)[A-Za-z0-9_-]{11}[^\s]*/gi;
+  let m;
+  while ((m = re.exec(text))) found.push(m[0].replace(/[),.;]+$/, ''));
+  // 也接受純 video id 行
+  text.split(/[\n,;]+/).map(l => l.trim()).forEach(l => {
+    if (/^[A-Za-z0-9_-]{11}$/.test(l)) found.push('https://www.youtube.com/watch?v=' + l);
+  });
+  // 去重（以 videoId）
+  const seen = new Set();
+  const out = [];
+  for (const u of found) {
+    const vid = (u.match(/(?:v=|youtu\.be\/|\/embed\/|\/shorts\/)([A-Za-z0-9_-]{11})/) || [])[1];
+    const key = vid || u;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(u);
+  }
+  return out;
+}
 function confirmListenYoutubeModal() {
-  const url = ($('#lytUrl')?.value || '').trim();
-  if (!url) { toast('請貼上 YouTube 網址', true); return; }
-  if (!/youtu\.?be/.test(url)) { toast('看起來不是 YouTube 網址', true); return; }
+  const raw = ($('#lytUrl')?.value || '').trim();
+  const urls = parseListenYoutubeUrls(raw);
+  if (!urls.length) { toast('請貼上至少一個 YouTube 網址', true); return; }
   const caption = (document.querySelector('input[name="lytCaption"]:checked') || {}).value || 'cc';
   const translate = (document.querySelector('input[name="lytTranslate"]:checked') || {}).value || 'browser';
   closeListenYoutubeModal();
-  listenAddYoutube(url, {
+  enqueueListenYoutubeUrls(urls, {
     forceWhisper: caption === 'whisper',
     translatePrefer: translate === 'gemini' ? 'gemini' : 'browser',
   });
@@ -4750,6 +4946,7 @@ function fmtTime(sec) {
 }
 
 function renderListenItem(item) {
+  ensureListenCaptionsClean(item);
   $('#listenTitle').textContent = item.title;
   updateListenSourceButtons(item);
   // 只有換了 item（或播放器不存在）才重建播放器，避免整理過程中重置播放進度
@@ -4941,9 +5138,9 @@ function listenSeekTo(sec) {
 /* ---------- 綁定 ---------- */
 function bindListen() {
   $('#listenFile')?.addEventListener('change', e => {
-    const f = e.target.files && e.target.files[0];
+    const files = e.target.files;
     e.target.value = '';
-    if (f) listenUploadFile(f);
+    if (files && files.length) enqueueListenFiles(files);
   });
   $('#listenYoutubeBtn')?.addEventListener('click', openListenYoutubeModal);
   $('#lytConfirm')?.addEventListener('click', confirmListenYoutubeModal);
@@ -4951,7 +5148,7 @@ function bindListen() {
     if (e.target.closest('[data-close-lyt]')) closeListenYoutubeModal();
   });
   $('#lytUrl')?.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); confirmListenYoutubeModal(); }
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); confirmListenYoutubeModal(); }
   });
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && $('#listenYoutubeModal') && !$('#listenYoutubeModal').hidden) closeListenYoutubeModal();

@@ -295,14 +295,15 @@
           <h2>🎧 我的聽力</h2>
           <div class="reader-lib-actions">
             <label class="btn primary file-btn">
-              ＋ 上傳音檔／影片
-              <input type="file" id="listenFile" accept="audio/*,video/*" hidden />
+              ＋ 批量上傳音檔／影片
+              <input type="file" id="listenFile" accept="audio/*,video/*" multiple hidden />
             </label>
-            <button class="btn ghost" id="listenYoutubeBtn">▶ YouTube 網址</button>
+            <button class="btn ghost" id="listenYoutubeBtn">▶ 批量 YouTube</button>
             <span id="listenBackendState" class="hint"></span>
           </div>
         </div>
-        <p class="hint" id="listenLibHint">上傳音檔／影片，或貼上 YouTube 網址：系統會用雲端 Whisper（Replicate）產生逐字稿（YouTube 有字幕就直接用字幕），逐段中英對照、標出你背過的生字，並整理重要單字／片語／文法。左上播放、左下逐字稿、右側重點。檔案會存到雲端，換裝置也能重看。</p>
+        <p class="hint" id="listenLibHint">可一次選多個音檔／影片，或貼多行 YouTube 網址：會依序批次處理（轉錄→翻譯→重點）。YouTube 有字幕就用 CC（並自動去掉滾動重複），沒有才走 Whisper。左上播放、左下逐字稿、右側重點；檔案存雲端，換裝置也能看。</p>
+        <p class="hint" id="listenQueueHint" hidden></p>
         <div id="listenList" class="reader-book-list"></div>
       </div>
 
@@ -470,17 +471,17 @@
   <!-- ===================== YouTube 聽力彈窗 ===================== -->
   <div id="listenYoutubeModal" class="modal" hidden>
     <div class="modal-overlay" data-close-lyt></div>
-    <div class="modal-box" role="dialog" aria-modal="true" style="max-width:480px">
+    <div class="modal-box" role="dialog" aria-modal="true" style="max-width:520px">
       <div class="modal-header">
-        <span class="modal-title">加入 YouTube 聽力</span>
+        <span class="modal-title">批量加入 YouTube</span>
         <div class="modal-actions">
           <button class="modal-close" title="關閉" data-close-lyt>✕</button>
         </div>
       </div>
       <div class="modal-body">
         <label class="field">
-          <span class="field-label">YouTube 網址</span>
-          <input type="url" id="lytUrl" autocomplete="off" spellcheck="false" placeholder="https://youtu.be/… 或 https://www.youtube.com/watch?v=…" />
+          <span class="field-label">YouTube 網址（每行一個，可貼多筆）</span>
+          <textarea id="lytUrl" rows="6" autocomplete="off" spellcheck="false" placeholder="https://youtu.be/…&#10;https://www.youtube.com/watch?v=…&#10;https://www.youtube.com/watch?v=…"></textarea>
         </label>
         <fieldset class="lyt-opts">
           <legend>逐字稿來源</legend>
@@ -505,7 +506,7 @@
           </label>
         </fieldset>
         <div class="add-btns">
-          <button class="btn primary" id="lytConfirm" type="button">開始處理</button>
+          <button class="btn primary" id="lytConfirm" type="button">加入佇列並處理</button>
           <button class="btn ghost" data-close-lyt type="button">取消</button>
         </div>
       </div>
