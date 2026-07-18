@@ -6809,15 +6809,38 @@ function selectionInRoots() {
   const node = range.commonAncestorContainer;
   const el = node.nodeType === 1 ? node : node.parentElement;
   if (!el) return null;
-  const roots = [
-    document.querySelector('#readerArticle .rd-main'),
-    document.getElementById('listenTranscript'),
-  ].filter(Boolean);
-  const root = roots.find(r => r.contains(el));
+
+  // 不要在按鈕、表單、導航、登入門、小框本身觸發
+  if (el.closest('button, a, input, textarea, select, label, .sel-ai-pop, .nav, .topbar, .login-gate, .toast, .modal-header, .modal-actions, .rate-btns, .study-toolbar')) {
+    return null;
+  }
+  // 設定頁（金鑰等）不彈
+  if (el.closest('#view-settings')) return null;
+
+  // 主要學習內容：背誦字卡、詞庫、詳情、新增預覽、閱讀、聽力…
+  const root = el.closest([
+    '#cardFront',
+    '#cardBack',
+    '#studyCard',
+    '#studyEditor',
+    '#modalBody',
+    '#deckList',
+    '#previewArea',
+    '#readerArticle .rd-main',
+    '#readerArticle .rd-aside',
+    '#listenTranscript',
+    '#listenSide',
+    '.word-card',
+  ].join(', '));
   if (!root) return null;
-  // 不要在按鈕、輸入框裡觸發
-  if (el.closest('button, input, textarea, select, .sel-ai-pop, .rd-aside, .listen-side')) return null;
-  const block = el.closest('.rd-para, .ls-seg, .rd-en, .ls-en') || el;
+
+  const block = el.closest([
+    '.rd-para', '.ls-seg', '.rd-en', '.ls-en',
+    '.card-face', '.card-back', '.word-card',
+    '.def-item', '.example', '.entry-section', '.entry-word',
+    '.fc-word', '.fc-zh-main', '.spell-cloze', '.ma-line',
+    'p', 'div',
+  ].join(', ')) || el;
   const context = plainEnText(block).slice(0, 600);
   return { text, context, range };
 }
@@ -6855,25 +6878,31 @@ function bindSelAiPop() {
   // 在小框上 mousedown 避免清掉選取／立刻關閉
   pop.addEventListener('mousedown', e => e.preventDefault());
 
-  document.addEventListener('mouseup', e => {
-    if (e.target.closest('#selAiPop')) return;
-    // 等瀏覽器完成選取
+  const onSelEnd = (e) => {
+    if (e.target && e.target.closest && e.target.closest('#selAiPop')) return;
+    // 等瀏覽器完成選取（含觸控）
     setTimeout(() => {
       const hit = selectionInRoots();
       if (hit) {
         const rect = hit.range.getBoundingClientRect();
         if (rect.width || rect.height) showSelAiPop(hit.text, hit.context, rect);
         else hideSelAiPop();
-      } else if (!e.target.closest('#selAiPop')) {
+      } else if (!(e.target && e.target.closest && e.target.closest('#selAiPop'))) {
         hideSelAiPop();
       }
     }, 10);
-  });
+  };
+  document.addEventListener('mouseup', onSelEnd);
+  document.addEventListener('touchend', onSelEnd, { passive: true });
 
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') hideSelAiPop();
   });
-  document.addEventListener('scroll', () => hideSelAiPop(), true);
+  document.addEventListener('scroll', (e) => {
+    // 小框內捲動答案不關閉
+    if (e.target && e.target.closest && e.target.closest('#selAiPop')) return;
+    hideSelAiPop();
+  }, true);
 
   pop.addEventListener('click', e => {
     const chip = e.target.closest('[data-sel-chip]');
