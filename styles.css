@@ -881,15 +881,16 @@ body.modal-open { overflow: hidden; }
 }
 
 /* ===================== 聽力 ===================== */
-/* 開啟單一聽力時：整頁鎖在螢幕高度，頂欄／標題不跟著滾走 */
-body:has(#listenItem:not([hidden])) {
+/* 開啟單一聽力時：整頁鎖在螢幕高度，頂欄／標題不跟著滾走
+   必須同時在「聽力」分頁，避免切到閱讀等頁面時 body 仍 overflow:hidden */
+body:has(#view-listen.active #listenItem:not([hidden])) {
   height: 100dvh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
 }
-body:has(#listenItem:not([hidden])) .topbar { flex-shrink: 0; }
-body:has(#listenItem:not([hidden])) .container {
+body:has(#view-listen.active #listenItem:not([hidden])) .topbar { flex-shrink: 0; }
+body:has(#view-listen.active #listenItem:not([hidden])) .container {
   flex: 1;
   min-height: 0;
   width: 100%;
@@ -983,8 +984,8 @@ html.hide-zh .ls-zh { display: none !important; }
 .ls-processing { display: flex; align-items: center; gap: 10px; color: var(--text-soft); padding: 20px 0; justify-content: center; text-align: center; }
 
 @media (max-width: 860px) {
-  body:has(#listenItem:not([hidden])) { height: auto; overflow: auto; display: block; }
-  body:has(#listenItem:not([hidden])) .container {
+  body:has(#view-listen.active #listenItem:not([hidden])) { height: auto; overflow: auto; display: block; }
+  body:has(#view-listen.active #listenItem:not([hidden])) .container {
     height: auto; max-height: none; overflow: visible; display: block; padding: 14px 14px 40px;
   }
   #view-listen.active:has(#listenItem:not([hidden])) {
