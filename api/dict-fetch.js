@@ -161,6 +161,16 @@ function sourcesFor(word) {
   ];
 }
 
+function isCfChallenge(html, status = 200) {
+  const t = String(html || '');
+  const head = t.slice(0, 4000);
+  if ([403, 503].includes(status) && /cloudflare|cf-|Just a moment/i.test(t)) return true;
+  if (/Just a moment|cf-browser-verification|challenge-platform|Performing security verification|cdn-cgi\/challenge|Attention Required! \| Cloudflare/i.test(t)) {
+    if (t.length < 25000 || /Just a moment/i.test(head)) return true;
+  }
+  return false;
+}
+
 async function fetchUrl(url, ms = 10000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
@@ -172,10 +182,16 @@ async function fetchUrl(url, ms = 10000) {
         'User-Agent': UA,
         Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.8',
+        'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Upgrade-Insecure-Requests': '1',
       },
     });
+    const html = await res.text();
+    if (isCfChallenge(html, res.status)) throw new Error(`Cloudflare challenge (${res.status})`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.text();
+    return html;
   } finally {
     clearTimeout(t);
   }

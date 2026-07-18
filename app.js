@@ -1079,7 +1079,7 @@ async function fetchFreeDictionaryRaw(word) {
 
 /**
  * 未貼歐路內容時，自動從劍橋／柯林斯／朗文／歐路／Etymonline 抓補充。
- * 優先 Vercel /api/dict-fetch，其次聽力後端，最後 Free Dictionary。
+ * 優先聽力後端（curl_cffi + 代理可過 Cloudflare），其次 Vercel，最後 Free Dictionary。
  */
 async function fetchOnlineDictRaw(word, onStatus) {
   const w = String(word || '').trim();
@@ -1094,17 +1094,8 @@ async function fetchOnlineDictRaw(word, onStatus) {
     throw new Error('empty');
   };
 
-  report('正在從線上詞典抓取補充（劍橋／柯林斯／朗文／歐路／Etymonline）…');
-  // 1) Vercel serverless
-  try {
-    const j = await tryJson(`/api/dict-fetch?word=${encodeURIComponent(w)}`);
-    const okN = (j.sources || []).filter(s => s.ok).length;
-    report(`已抓到 ${okN} 個詞典來源，開始 AI 整理…`);
-    return j.text;
-  } catch (e) {
-    console.warn('dict-fetch (vercel) failed', e);
-  }
-  // 2) 聽力 Cloud Run 後端
+  report('正在從線上詞典抓取補充（劍橋／柯林斯等，含 Cloudflare 繞過）…');
+  // 1) 聽力 Cloud Run 後端（curl_cffi TLS 模擬 + 必要時代理）
   try {
     const j = await tryJson(`${listenBackend()}/beidanzi/dict_fetch?word=${encodeURIComponent(w)}`);
     const okN = (j.sources || []).filter(s => s.ok).length;
@@ -1112,6 +1103,15 @@ async function fetchOnlineDictRaw(word, onStatus) {
     return j.text;
   } catch (e) {
     console.warn('dict-fetch (backend) failed', e);
+  }
+  // 2) Vercel serverless（無 curl_cffi，作後備）
+  try {
+    const j = await tryJson(`/api/dict-fetch?word=${encodeURIComponent(w)}`);
+    const okN = (j.sources || []).filter(s => s.ok).length;
+    report(`已抓到 ${okN} 個詞典來源，開始 AI 整理…`);
+    return j.text;
+  } catch (e) {
+    console.warn('dict-fetch (vercel) failed', e);
   }
   // 3) 瀏覽器直連 Free Dictionary
   report('線上詞典代理失敗，改用 Free Dictionary…');
