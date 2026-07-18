@@ -361,18 +361,115 @@ function pcmDurationSec(bytes, sampleRate) {
 }
 
 let ttsBusy = false;
+/** 新增預覽尚未存檔時，暫存已生成的 AI 語音網址 */
+let pendingTtsHolder = { ttsUrls: {} };
+
+function ttsCacheKey(text) {
+  const t = String(text || '').trim().replace(/\s+/g, ' ');
+  if (!t) return '';
+  if (t.length <= 160) return t;
+  let h = 5381;
+  for (let i = 0; i < t.length; i++) h = ((h << 5) + h) ^ t.charCodeAt(i);
+  return `${t.slice(0, 48)}#${(h >>> 0).toString(36)}`;
+}
+
+/** 找出目前操作中的字卡（詳情／編輯／背誦／新增預覽） */
+function resolveTtsCard() {
+  if (currentEntry?.card) return currentEntry.card;
+  try {
+    if (session?.queue?.length && $('#studyCard') && !$('#studyCard').hidden) {
+      const item = currentItem();
+      if (item) {
+        const c = cards.find(x => x.id === item.cardId);
+        if (c) return c;
+      }
+    }
+  } catch { /* session 未就緒 */ }
+  if (pendingCard) return pendingTtsHolder;
+  return null;
+}
+
+async function uploadTtsWavBlob(blob, filename = 'card-tts.wav') {
+  const fd = new FormData();
+  fd.append('file', new File([blob], filename, { type: 'audio/wav' }));
+  const res = await fetch(listenBackend() + '/beidanzi/store_audio', { method: 'POST', body: fd });
+  if (!res.ok) throw new Error('上傳失敗 ' + res.status);
+  const j = await res.json();
+  if (!j?.url) throw new Error('未回傳網址');
+  return j.url;
+}
+
+function saveTtsUrlToCard(card, key, url) {
+  if (!card || !key || !url) return;
+  if (!card.ttsUrls || typeof card.ttsUrls !== 'object') card.ttsUrls = {};
+  card.ttsUrls[key] = url;
+  // 已存檔字卡：寫入本機 + Firestore（音檔在 Storage，網址在卡片文件）
+  if (card.id && cards.some(c => c.id === card.id)) {
+    saveCards();
+    cloudUpsert(card);
+  }
+}
+
+async function playAudioUrl(url) {
+  return new Promise((resolve, reject) => {
+    const a = new Audio(url);
+    let settled = false;
+    const ok = () => { if (!settled) { settled = true; resolve(); } };
+    const fail = (err) => { if (!settled) { settled = true; reject(err || new Error('play failed')); } };
+    a.onerror = () => fail(new Error('load failed'));
+    a.onplaying = () => ok();
+    const p = a.play();
+    if (p && typeof p.then === 'function') p.catch(fail);
+    setTimeout(() => fail(new Error('timeout')), 12000);
+  });
+}
+
 async function speakGeminiTTS(text) {
   if (!text) return;
+  const key = ttsCacheKey(text);
+  const card = resolveTtsCard();
+  const cached = key && card?.ttsUrls?.[key];
+
+  if (cached) {
+    try {
+      await playAudioUrl(cached);
+      return;
+    } catch {
+      if (card?.ttsUrls) {
+        delete card.ttsUrls[key];
+        if (card.id) { saveCards(); cloudUpsert(card); }
+      }
+    }
+  }
+
   if (!activeKeys().length) { toast('尚未設定 API 金鑰', true); return; }
   if (ttsBusy) return;
   ttsBusy = true;
   toast('🤖 AI 生成語音中…');
+  let generated = null;
   try {
-    const r = await geminiTTSChunk(text);
-    if (r) { new Audio(pcmB64ToWavUrl(r.b64, r.rate)).play(); return; }
-    toast('AI 語音失敗，改用瀏覽器語音', true);
-    speak(text);
-  } finally { ttsBusy = false; }
+    generated = await geminiTTSChunk(text);
+    if (!generated) {
+      toast('AI 語音失敗，改用瀏覽器語音', true);
+      speak(text);
+      return;
+    }
+    const localUrl = pcmB64ToWavUrl(generated.b64, generated.rate);
+    try { new Audio(localUrl).play(); } catch { /* ignore */ }
+  } finally {
+    ttsBusy = false;
+  }
+
+  // 背景上傳：音檔進 Storage，網址寫入字卡（同步到 Firestore）
+  if (generated && card && key) {
+    try {
+      const blob = pcmChunksToWavBlob([b64ToBytes(generated.b64)], generated.rate);
+      const url = await uploadTtsWavBlob(blob, `tts-${Date.now()}.wav`);
+      saveTtsUrlToCard(card, key, url);
+    } catch (e) {
+      console.warn('AI 語音雲端保存失敗', e);
+    }
+  }
 }
 
 // ---- 喇叭按鈕 HTML ----
@@ -1387,6 +1484,7 @@ function bindAdd() {
     $('#saveCardBtn').hidden = true;
     $('#genStatus').hidden = true;
     pendingCard = null;
+    pendingTtsHolder = { ttsUrls: {} };
     currentEntry = null;
     $('#addHint').textContent = '整理後會顯示預覽，確認無誤再存入詞庫。';
   });
@@ -1501,6 +1599,10 @@ function addCardFromData(data, raw) {
 function onSaveCard() {
   if (!pendingCard) return;
   const card = addCardFromData(pendingCard, $('#rawInput').value.trim());
+  if (pendingTtsHolder?.ttsUrls && Object.keys(pendingTtsHolder.ttsUrls).length) {
+    card.ttsUrls = { ...pendingTtsHolder.ttsUrls };
+  }
+  pendingTtsHolder = { ttsUrls: {} };
   saveCards();
   cloudUpsert(card);
   pendingCard = null;
