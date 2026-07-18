@@ -1420,13 +1420,30 @@ html.hide-zh .ls-zh { display: none !important; }
 .sel-ai-pop[hidden] { display: none !important; }
 .sel-ai-head {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
-  margin-bottom: 8px;
+  margin: -4px -4px 8px; padding: 6px 4px 4px;
+  border-radius: 8px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.sel-ai-pop.dragging .sel-ai-head { cursor: grabbing; }
+.sel-ai-pop.dragging { opacity: .96; box-shadow: 0 14px 36px rgba(0, 0, 0, .22); }
+.sel-ai-drag {
+  flex-shrink: 0;
+  color: var(--text-mute);
+  font-size: 12px;
+  letter-spacing: -2px;
+  line-height: 1.2;
+  padding-top: 2px;
+  opacity: .7;
 }
 .sel-ai-quote {
   flex: 1; min-width: 0;
   font-weight: 600; color: var(--text);
   word-break: break-word;
   max-height: 2.8em; overflow: hidden;
+  cursor: grab;
 }
 .sel-ai-close {
   border: 0; background: transparent; color: var(--text-mute);

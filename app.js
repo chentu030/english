@@ -6774,7 +6774,20 @@ let selAiBusy = false;
 
 function hideSelAiPop() {
   const pop = $('#selAiPop');
-  if (pop) pop.hidden = true;
+  if (pop) {
+    pop.hidden = true;
+    pop.classList.remove('dragging');
+  }
+}
+
+function clampSelAiPos(left, top, pop) {
+  const pad = 8;
+  const el = pop || $('#selAiPop');
+  const w = el?.offsetWidth || 300;
+  const h = el?.offsetHeight || 160;
+  left = Math.max(pad, Math.min(left, window.innerWidth - w - pad));
+  top = Math.max(pad, Math.min(top, window.innerHeight - h - pad));
+  return { left: Math.round(left), top: Math.round(top) };
 }
 
 function showSelAiPop(text, context, rect) {
@@ -6788,16 +6801,16 @@ function showSelAiPop(text, context, rect) {
   if (ans) { ans.hidden = true; ans.textContent = ''; }
   if (input) input.value = '';
   pop.hidden = false;
-  // 先顯示再量寬，避免跑出螢幕
-  const pad = 8;
   const w = pop.offsetWidth || 300;
-  const h = pop.offsetHeight || 160;
   let left = rect.left + rect.width / 2 - w / 2;
   let top = rect.bottom + 8;
-  left = Math.max(pad, Math.min(left, window.innerWidth - w - pad));
-  if (top + h > window.innerHeight - pad) top = Math.max(pad, rect.top - h - 8);
-  pop.style.left = `${Math.round(left)}px`;
-  pop.style.top = `${Math.round(top)}px`;
+  ({ left, top } = clampSelAiPos(left, top, pop));
+  // 若下方空間不足，改放到選取區上方
+  if (top < rect.bottom && rect.top - (pop.offsetHeight || 160) - 8 > 8) {
+    ({ left, top } = clampSelAiPos(left, rect.top - (pop.offsetHeight || 160) - 8, pop));
+  }
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
 }
 
 function selectionInRoots() {
