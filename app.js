@@ -620,6 +620,9 @@ function speakSequence(items) {
       .forEach(it => window.speechSynthesis.speak(makeUtterance(String(it.text), it.lang || L().speech.def)));
   } catch (e) { console.error(e); }
 }
+function stopStudySpeech() {
+  try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch {}
+}
 const ZH_LANG = 'zh-TW';
 function zhExplanationOf(d) {
   return (d.definitions || []).map(x => (x.meaning_zh || '').trim()).filter(Boolean).join('，');
@@ -647,10 +650,21 @@ function autoSpeakFront(d, mode) {
   // en2zh 及其他「看外文回想…」：只先念單字
   if (d.word) speakSequence([{ text: d.word, lang: TARGET_LANG() }]);
 }
-// 顯示答案後：念單字＋中文解釋＋例句
+// 顯示答案：英中交錯×3，再每句例句念兩次
 function autoSpeakBack(d) {
-  const items = [{ text: d.word, lang: TARGET_LANG() }, { text: zhExplanationOf(d), lang: ZH_LANG }];
-  exampleSentencesOf(d).forEach(s => items.push({ text: s, lang: TARGET_LANG() }));
+  const en = String(d.word || '').trim();
+  const zh = zhExplanationOf(d);
+  const items = [];
+  for (let i = 0; i < 3; i++) {
+    if (en) items.push({ text: en, lang: TARGET_LANG() });
+    if (zh) items.push({ text: zh, lang: ZH_LANG });
+  }
+  exampleSentencesOf(d).forEach(s => {
+    const t = String(s || '').trim();
+    if (!t) return;
+    items.push({ text: t, lang: TARGET_LANG() });
+    items.push({ text: t, lang: TARGET_LANG() });
+  });
   speakSequence(items);
 }
 
@@ -2963,7 +2977,7 @@ function revealAnswer() {
   $('#cardBack').hidden = false;
   $('#showAnswerBtn').hidden = true;
   $('#rateBtns').hidden = false;
-  // 顯示答案自動朗讀：單字＋中文解釋＋所有例句
+  // 顯示答案：英中交錯×3 → 每句例句×2
   const card = item ? cards.find(c => c.id === item.cardId) : null;
   if (card) autoSpeakBack(card.data);
 }
