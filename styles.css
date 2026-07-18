@@ -1154,19 +1154,47 @@ body:has(#view-listen.active #listenItem:not([hidden])) .container {
 .listen-resizer:hover::before, .listen-resizer.dragging::before { background: var(--primary); width: 4px; }
 .listen-player {
   position: relative;
-  background: #000; border-radius: var(--radius); overflow: hidden; margin: 0 auto 8px;
-  aspect-ratio: 16 / 9;
-  width: min(100%, calc(min(36vh, 380px) * 16 / 9));
+  background: #000; border-radius: var(--radius); overflow: hidden; margin: 0 auto;
+  height: var(--listen-player-h, min(36vh, 380px));
+  width: 100%;
   max-width: 100%;
+  max-height: 75%;
+  min-height: 120px;
   flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
 }
 .listen-player.audio-only {
-  aspect-ratio: auto; width: 100%;
+  height: auto; min-height: 0; max-height: none;
+  width: 100%;
   background: var(--bg-elev); padding: 10px 14px;
 }
 .listen-player video, .listen-player iframe { width: 100%; height: 100%; border: 0; display: block; }
 .listen-player audio { width: 100%; }
+.listen-player-resizer {
+  flex-shrink: 0;
+  height: 10px;
+  margin: 2px 0 6px;
+  cursor: row-resize;
+  position: relative;
+  touch-action: none;
+  border-radius: 4px;
+}
+.listen-player-resizer::before {
+  content: '';
+  position: absolute;
+  left: 18%; right: 18%; top: 50%;
+  height: 3px;
+  transform: translateY(-50%);
+  background: var(--border);
+  border-radius: 2px;
+}
+.listen-player-resizer:hover::before,
+.listen-player-resizer.dragging::before {
+  background: var(--primary);
+  height: 4px;
+  left: 10%; right: 10%;
+}
+.listen-player.audio-only + .listen-player-resizer { display: none; }
 /* 自訂 YouTube 控制條：僅 hover 顯示，移開立刻消失（取代原生慢消失上下列） */
 .yt-chrome {
   position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
@@ -1329,9 +1357,9 @@ html.hide-zh .ls-zh { display: none !important; }
   .listen-split { grid-template-columns: 1fr; height: auto; overflow: visible; }
   .listen-resizer { display: none; }
   .listen-left { height: auto; max-height: none; overflow: visible; }
-  .listen-player { width: 100%; }
+  .listen-player:not(.audio-only) { width: 100%; max-height: 70vh; }
   .listen-side { height: auto; max-height: none; }
-  .listen-transcript { max-height: 40vh; flex: none; }
+  .listen-transcript { max-height: none; min-height: 28vh; flex: 1 1 auto; }
 
   body:has(#view-reader.active #readerBook:not([hidden])) { height: auto; overflow: auto; display: block; }
   body:has(#view-reader.active #readerBook:not([hidden])) .container {

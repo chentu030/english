@@ -6402,6 +6402,48 @@ function bindListenResizer() {
   window.addEventListener('pointerup', up);
 }
 
+// 影片／逐字稿高度比例可拖曳調整
+function bindListenPlayerResizer() {
+  const rez = $('#listenPlayerResizer');
+  const player = $('#listenPlayer');
+  if (!rez || !player) return;
+  const saved = localStorage.getItem('listen_player_h');
+  if (saved) document.documentElement.style.setProperty('--listen-player-h', saved);
+  let dragging = false;
+  const setIframePe = (on) => {
+    const iframe = player.querySelector('iframe');
+    if (iframe) iframe.style.pointerEvents = on ? '' : 'none';
+  };
+  const move = e => {
+    if (!dragging) return;
+    const top = player.getBoundingClientRect().top;
+    const min = 120;
+    const max = Math.max(min + 40, window.innerHeight * 0.72);
+    const h = Math.max(min, Math.min(max, e.clientY - top));
+    document.documentElement.style.setProperty('--listen-player-h', `${Math.round(h)}px`);
+  };
+  const up = () => {
+    if (!dragging) return;
+    dragging = false;
+    rez.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    setIframePe(true);
+    const v = getComputedStyle(document.documentElement).getPropertyValue('--listen-player-h').trim();
+    if (v) localStorage.setItem('listen_player_h', v);
+  };
+  rez.addEventListener('pointerdown', e => {
+    dragging = true;
+    rez.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    setIframePe(false);
+    e.preventDefault();
+    try { rez.setPointerCapture(e.pointerId); } catch {}
+  });
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+  window.addEventListener('pointercancel', up);
+}
+
 function listenSeekTo(sec) {
   if (ytPlayer && ytPlayer.seekTo) { ytPlayer.seekTo(sec, true); ytPlayer.playVideo && ytPlayer.playVideo(); }
   else if (listenMediaEl) { listenMediaEl.currentTime = sec; listenMediaEl.play && listenMediaEl.play(); }
@@ -6499,6 +6541,7 @@ function bindListen() {
     if (it) relistenTranslateGemini(it);
   });
   bindListenResizer();
+  bindListenPlayerResizer();
   $('#listenSide')?.addEventListener('click', e => {
     if (e.target.closest('.speak-btn')) return;
     const regen = e.target.closest('.ls-regen');
