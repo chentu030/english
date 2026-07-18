@@ -3992,7 +3992,11 @@ function renderListenList() {
     const n = (it.segments || []).length;
     const d = new Date(it.createdAt || Date.now());
     const ds = `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
-    const st = it.status === 'processing' ? '（處理中…）' : it.status === 'error' ? '（處理失敗）' : `${n} 段`;
+    const cap = it.captionSource === 'manual' ? '人工字幕'
+      : it.captionSource === 'auto' ? '自動字幕'
+      : it.captionSource === 'whisper' ? 'Whisper'
+      : '';
+    const st = it.status === 'processing' ? '（處理中…）' : it.status === 'error' ? '（處理失敗）' : `${n} 段${cap ? ' · ' + cap : ''}`;
     return `<button class="reader-book-card" data-listen="${it.id}">
       <span class="rbc-icon">${it.kind === 'youtube' ? '▶️' : (it.mediaType === 'video' ? '🎬' : '🎧')}</span>
       <span class="rbc-info"><span class="rbc-title">${esc(it.title)}</span><span class="rbc-sub">${st} · ${ds}</span></span>
@@ -4080,6 +4084,10 @@ async function listenAddYoutube(url) {
     item.segments = (j.segments || []).map(s => ({ start: s.start, end: s.end, en: (s.text || '').trim(), zh: '' }));
     saveListen();
     setHint('');
+    const src = j.captionSource;
+    if (src === 'manual') toast('已使用 YouTube 人工字幕（未下載轉錄）');
+    else if (src === 'auto') toast('已使用 YouTube 自動字幕 CC（未下載轉錄）');
+    else if (src === 'whisper' || j.usedWhisper) toast('無可用字幕，已下載音訊並用 Whisper 轉錄');
     await listenAfterTranscribe(item);
   } catch (e) {
     item.status = 'error'; saveListen();
