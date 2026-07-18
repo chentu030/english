@@ -2782,9 +2782,10 @@ function bindSettings() {
    資料模型：
    book = { id, title, createdAt, updatedAt, kind:'pdf'|'text',
             pages:[string], toc:[{id,title,page,section,done}], articles:{ [tocId]: article } }
-   article = { tocId, title, body, paragraphs:[{en,zh}], summary,
-               vocab:[{word,meaning_zh,example_en,example_zh}],
-               phrases:[{phrase,meaning_zh}], patterns:[{pattern,explain_zh,example_en}],
+   article = { tocId, title, body, paragraphs:[{en,zh}], summary, mindmap,
+               vocab:[{word,meaning_zh,example_en,example_zh,example_pi}],
+               phrases:[{phrase,meaning_zh,example_en,example_pi}],
+               patterns:[{pattern,explain_zh,example_en,example_pi}],
                processedAt }
    pages 只存本機（供之後處理未整理文章）；雲端只存已處理內容（避免超過文件大小上限）。
    ========================================================================= */
@@ -3222,12 +3223,18 @@ async function processArticle(book, toc) {
   const [transArr, vocabOut, summary] = await Promise.all([Promise.all(transTasks), vocabTask, summaryTask]);
   const paragraphs = transArr.flat();
 
+  status('整理心智圖大綱…');
+  let mindmap = null;
+  try { mindmap = await generateReaderMindmap(paragraphs); } catch (e) { console.error('心智圖失敗', e); }
+
   const article = {
     tocId: toc.id, title: toc.title, body,
-    paragraphs, summary,
+    paragraphs, summary, mindmap,
     vocab: vocabOut.vocab || [], phrases: vocabOut.phrases || [], patterns: vocabOut.patterns || [],
     processedAt: now(),
   };
+  attachReaderExamplePis(article);
+  attachReaderMindmapPis(article);
   book.articles = book.articles || {};
   book.articles[toc.id] = article;
   toc.done = true;
@@ -3241,6 +3248,7 @@ async function processArticle(book, toc) {
 /* ---------- 朗讀整篇：瀏覽器 / AI（AI 音檔存雲端 Storage，網址存 Firestore） ---------- */
 let readerAudioEl = null;
 let readerSpeakIdx = -1;
+let readerSpeakGen = 0; // 用來讓「停止」真正取消整篇佇列（cancel 會觸發 onerror，否則會唸下一段）
 let readerSpeed = parseFloat(localStorage.getItem('reader_speed') || '1') || 1;
 function getReaderSpeed() {
   // 優先讀畫面上的語速選單，避免變數與 UI 不同步
@@ -3275,10 +3283,12 @@ function highlightReadingPara(i) {
   const el = document.querySelector(`.rd-para[data-pi="${i}"]`);
   if (el) {
     el.classList.add('reading');
-    try { el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch {}
+    const main = document.querySelector('#readerArticle .rd-main');
+    if ($('#rdFollow')?.checked && main) scrollWithin(main, el);
   }
 }
 function readerStopAudio() {
+  readerSpeakGen++; // 作廢進行中的逐段朗讀佇列
   if (readerAudioEl) {
     try { readerAudioEl.pause(); readerAudioEl.onended = null; readerAudioEl.ontimeupdate = null; } catch {}
     readerAudioEl = null;
@@ -3290,6 +3300,7 @@ function readerPlayUrl(url, cues, opts = {}) {
   readerStopAudio();
   const startAt = opts.startAt || 0;
   const endAt = opts.endAt;
+  const gen = readerSpeakGen;
   readerAudioEl = new Audio(url);
   const applyRate = () => {
     if (!readerAudioEl) return;
@@ -3307,7 +3318,7 @@ function readerPlayUrl(url, cues, opts = {}) {
     if (readerAudioEl && Math.abs(readerAudioEl.playbackRate - getReaderSpeed()) > 0.01) applyRate();
   });
   readerAudioEl.addEventListener('timeupdate', () => {
-    if (!readerAudioEl) return;
+    if (!readerAudioEl || gen !== readerSpeakGen) return;
     // 播放中也持續確保語速正確
     if (Math.abs(readerAudioEl.playbackRate - getReaderSpeed()) > 0.01) applyRate();
     const t = readerAudioEl.currentTime;
@@ -3322,8 +3333,11 @@ function readerPlayUrl(url, cues, opts = {}) {
       if (hit) highlightReadingPara(hit.i);
     }
   });
-  readerAudioEl.addEventListener('ended', clearReadingHighlight);
+  readerAudioEl.addEventListener('ended', () => {
+    if (gen === readerSpeakGen) clearReadingHighlight();
+  });
   const play = () => {
+    if (gen !== readerSpeakGen || !readerAudioEl) return;
     applyRate();
     readerAudioEl.play().catch(e => toast('播放失敗：' + e.message, true));
   };
@@ -3349,17 +3363,19 @@ function readerPlayParaAI(a, paraIdx) {
 function speakArticleWithHighlight(a) {
   if (!window.speechSynthesis) { toast('這個瀏覽器不支援朗讀', true); return; }
   readerStopAudio();
+  const gen = readerSpeakGen;
   const jobs = (a.paragraphs || []).map((p, i) => ({ i, text: (p.en || '').trim() })).filter(j => j.text);
   if (!jobs.length) { toast('沒有內容可朗讀', true); return; }
   let n = 0;
   const next = () => {
+    if (gen !== readerSpeakGen) return;
     if (n >= jobs.length) { clearReadingHighlight(); return; }
     const job = jobs[n++];
     highlightReadingPara(job.i);
     const u = makeUtterance(job.text, TARGET_LANG());
     u.rate = getReaderSpeed(); // 每一段都重新套用語速
-    u.onend = next;
-    u.onerror = next;
+    u.onend = () => { if (gen === readerSpeakGen) next(); };
+    u.onerror = () => { if (gen === readerSpeakGen) next(); };
     window.speechSynthesis.speak(u);
   };
   next();
@@ -3493,23 +3509,33 @@ function wordFromDblClick(e) {
 function sideVocabHtml(vocab, { jumpable = false } = {}) {
   const list = vocab || [];
   if (!list.length) return '<p class="hint">—</p>';
-  const exLine = (ex, start) => {
+  // jumpable: true/'time' → data-start；'para' → data-pi（閱讀頁段落）
+  const mode = jumpable === true ? 'time' : jumpable;
+  const exLine = (ex, jumpVal) => {
     if (!ex) return '';
-    if (!jumpable) {
+    if (!mode) {
       return `<div class="rd-vex">${esc(ex)} <button class="speak-btn" data-speak="${esc(ex)}" data-src="browser" type="button">🔊</button></div>`;
     }
-    const canJump = start != null && start !== '';
+    const canJump = jumpVal != null && jumpVal !== '';
+    if (mode === 'para') {
+      const cls = canJump ? 'rd-vex rd-jump' : 'rd-vex';
+      const attrs = canJump ? ` data-pi="${jumpVal}" title="點擊跳到文章第 ${Number(jumpVal) + 1} 段"` : '';
+      return `<div class="${cls}"${attrs}>${esc(ex)} <button class="speak-btn" data-speak="${esc(ex)}" data-src="browser" type="button">🔊</button></div>`;
+    }
     const cls = canJump ? 'rd-vex ls-jump' : 'rd-vex';
-    const attrs = canJump ? ` data-start="${start}" title="點擊跳到影片／音檔對應處"` : '';
+    const attrs = canJump ? ` data-start="${jumpVal}" title="點擊跳到影片／音檔對應處"` : '';
     return `<div class="${cls}"${attrs}>${esc(ex)} <button class="speak-btn" data-speak="${esc(ex)}" data-src="browser" type="button">🔊</button></div>`;
   };
-  return list.map(v => `<div class="rd-vitem" data-word="${esc((v.word || '').toLowerCase())}">
+  return list.map(v => {
+    const jumpVal = mode === 'para' ? v.example_pi : v.example_start;
+    return `<div class="rd-vitem" data-word="${esc((v.word || '').toLowerCase())}">
       <div class="rd-vhead"><b class="rd-vword">${esc(v.word)}</b>${spkw(v.word)}
         <button class="btn ghost small rd-add-vocab" data-word="${esc(v.word)}" data-ex="${esc(v.example_en || '')}">＋ 加入詞庫</button></div>
       ${v.meaning_zh ? `<div class="rd-vmean">${esc(v.meaning_zh)}</div>` : ''}
-      ${exLine(v.example_en, v.example_start)}
+      ${exLine(v.example_en, jumpVal)}
       ${v.example_zh ? `<div class="rd-vexzh">${esc(v.example_zh)}</div>` : ''}
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 async function enrichSideVocabMeaning(store, word, onDone) {
@@ -3535,30 +3561,328 @@ async function enrichSideVocabMeaning(store, word, onDone) {
 }
 
 /** 閱讀頁：雙擊單字 → 右側重要單字 */
-function addReaderSideVocab(word, exampleEn) {
+function addReaderSideVocab(word, exampleEn, examplePi) {
   const book = readerBooks.find(b => b.id === readerCurrentBookId);
   const a = book && book.articles && book.articles[readerCurrentTocId];
   if (!a) { toast('請先開啟一篇文章', true); return; }
   a.vocab = a.vocab || [];
   const key = word.toLowerCase();
-  if (a.vocab.some(v => (v.word || '').toLowerCase() === key)) {
-    toast(`「${word}」已在重要單字`);
-    return;
-  }
-  a.vocab.unshift({ word, meaning_zh: '查詢中…', example_en: exampleEn || '', example_zh: '' });
-  book.updatedAt = now();
-  saveReader();
-  const box = $('#rdVocabList');
-  if (box) box.innerHTML = sideVocabHtml(a.vocab);
-  toast(`已加入「${word}」`);
-  enrichSideVocabMeaning(a, word, () => {
+  const exists = a.vocab.some(v => (v.word || '').toLowerCase() === key);
+  if (!exists) {
+    const entry = { word, meaning_zh: '查詢中…', example_en: exampleEn || '', example_zh: '' };
+    if (examplePi != null && examplePi !== '') entry.example_pi = examplePi;
+    a.vocab.unshift(entry);
+    book.updatedAt = now();
     saveReader();
-    const b = $('#rdVocabList');
-    if (b) b.innerHTML = sideVocabHtml(a.vocab);
+    const box = $('#rdVocabList');
+    if (box) box.innerHTML = sideVocabHtml(a.vocab, { jumpable: 'para' });
+    toast(`已加入「${word}」`);
+    enrichSideVocabMeaning(a, word, () => {
+      saveReader();
+      const b = $('#rdVocabList');
+      if (b) b.innerHTML = sideVocabHtml(a.vocab, { jumpable: 'para' });
+      scrollReaderVocabIntoView(word);
+    });
+  } else {
+    toast(`「${word}」已在重要單字`);
+  }
+  scrollReaderVocabIntoView(word);
+}
+
+/** 右側欄滾到指定重要單字，並暫時高亮 */
+function scrollReaderVocabIntoView(word) {
+  const key = String(word || '').toLowerCase();
+  if (!key) return;
+  const col = document.querySelector('#readerArticle .rd-collapse[data-collapse="vocab"]');
+  if (col) {
+    col.classList.remove('collapsed');
+    setReaderCollapse('vocab', false);
+  }
+  const side = document.querySelector('#readerArticle .rd-aside');
+  const el = document.querySelector(`#rdVocabList .rd-vitem[data-word="${CSS.escape(key)}"]`);
+  if (!el) return;
+  try {
+    const sRect = side?.getBoundingClientRect();
+    const eRect = el.getBoundingClientRect();
+    if (side && sRect) {
+      const delta = (eRect.top - sRect.top) - 12;
+      side.scrollTo({ top: side.scrollTop + delta, behavior: 'smooth' });
+    } else {
+      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  } catch {
+    el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  el.classList.remove('rd-vitem-flash');
+  void el.offsetWidth;
+  el.classList.add('rd-vitem-flash');
+  setTimeout(() => el.classList.remove('rd-vitem-flash'), 1600);
+}
+
+function readerCollapseState() {
+  try { return JSON.parse(localStorage.getItem('reader_collapse_v1') || '{}') || {}; }
+  catch { return {}; }
+}
+function setReaderCollapse(key, collapsed) {
+  const st = readerCollapseState();
+  st[key] = !!collapsed;
+  localStorage.setItem('reader_collapse_v1', JSON.stringify(st));
+}
+function readerCollapseHtml(key, titleInner, bodyInner) {
+  const collapsed = !!readerCollapseState()[key];
+  return `<div class="rd-collapse${collapsed ? ' collapsed' : ''}" data-collapse="${esc(key)}">
+    <div class="rd-collapse-head" role="button" tabindex="0" title="點擊收合／展開">
+      <span class="rd-collapse-chevron" aria-hidden="true">▾</span>
+      <div class="rd-sec-title">${titleInner}</div>
+    </div>
+    <div class="rd-collapse-body">${bodyInner}</div>
+  </div>`;
+}
+
+function findReaderParaIndex(paragraphs, example) {
+  const paras = paragraphs || [];
+  const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9'\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const needle = norm(example);
+  if (!needle || needle.length < 3) return undefined;
+  let best = null, bestScore = 0;
+  for (let i = 0; i < paras.length; i++) {
+    const hay = norm(paras[i].en);
+    if (!hay) continue;
+    if (hay.includes(needle) || needle.includes(hay)) return i;
+    const words = needle.split(' ').filter(w => w.length > 2).slice(0, 6);
+    if (!words.length) continue;
+    const hit = words.filter(w => hay.includes(w)).length;
+    const score = hit / words.length;
+    if (score > bestScore && score >= 0.5) { bestScore = score; best = i; }
+  }
+  return best == null ? undefined : best;
+}
+
+function attachReaderExamplePis(article) {
+  const paras = article.paragraphs || [];
+  if (!paras.length) return;
+  (article.vocab || []).forEach(v => {
+    if (v.example_pi != null) return;
+    const pi = findReaderParaIndex(paras, v.example_en);
+    if (pi != null) v.example_pi = pi;
+  });
+  (article.phrases || []).forEach(p => {
+    if (p.example_pi != null) return;
+    const pi = findReaderParaIndex(paras, p.example_en || p.phrase);
+    if (pi != null) p.example_pi = pi;
+  });
+  (article.patterns || []).forEach(p => {
+    if (p.example_pi != null) return;
+    const pi = findReaderParaIndex(paras, p.example_en || p.pattern);
+    if (pi != null) p.example_pi = pi;
   });
 }
 
-/** 聽力頁：雙擊單字 → 右側重要單字 */
+async function generateReaderMindmap(paragraphs) {
+  const paras = paragraphs || [];
+  const numbered = paras.map((p, i) => `[P${i}] ${(p.en || '').trim()}`).filter(l => l.length > 4).join('\n').slice(0, 16000);
+  if (!numbered.trim()) return null;
+  const schema = {
+    type: 'object',
+    properties: {
+      title: { type: 'string' },
+      title_pi: { type: 'number' },
+      branches: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            pi: { type: 'number' },
+            bullets: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: { text: { type: 'string' }, pi: { type: 'number' } },
+                required: ['text'],
+              },
+            },
+          },
+          required: ['title'],
+        },
+      },
+    },
+    required: ['title', 'branches'],
+  };
+  const out = await readerJSON(
+    `你是英語精讀老師。以下文章每段標了 [P數字]（段落編號）。用繁體中文產出「心智圖大綱」方便複習與跳轉：\n- title：中心主題（短句）\n- title_pi：主題對應段落編號（整數）\n- branches：4–8 個主分支；每個含 title、pi、bullets（2–5 個；每項含 text 與 pi）\npi 請對齊最相關那段的 [P數字]；要點精煉。只輸出 JSON。\n\n文章：\n${numbered}`,
+    schema, 0.4, 4096,
+  );
+  const branches = (Array.isArray(out.branches) ? out.branches : []).map(b => ({
+    title: b.title || '',
+    pi: Number.isFinite(b.pi) ? b.pi : undefined,
+    bullets: (b.bullets || []).map(x => {
+      if (typeof x === 'string') return { text: x };
+      return { text: x.text || '', pi: Number.isFinite(x.pi) ? x.pi : undefined };
+    }),
+  }));
+  return {
+    title: out.title || '',
+    title_pi: Number.isFinite(out.title_pi) ? out.title_pi : undefined,
+    branches,
+  };
+}
+
+function attachReaderMindmapPis(article) {
+  const paras = article.paragraphs || [];
+  const mm = article.mindmap;
+  if (!mm || !paras.length) return;
+  const clamp = (n) => {
+    if (!Number.isFinite(n)) return undefined;
+    const i = Math.round(n);
+    if (i < 0 || i >= paras.length) return undefined;
+    return i;
+  };
+  const byHint = (hint, fallback) => {
+    const c = clamp(fallback);
+    if (c != null) return c;
+    return findReaderParaIndex(paras, hint);
+  };
+  const tp = byHint(mm.title, mm.title_pi);
+  if (tp != null) mm.title_pi = tp;
+  (mm.branches || []).forEach(b => {
+    const bp = byHint(b.title, b.pi);
+    if (bp != null) b.pi = bp;
+    (b.bullets || []).forEach(bu => {
+      const up = byHint(bu.text, bu.pi);
+      if (up != null) bu.pi = up;
+    });
+  });
+}
+
+function renderReaderMindmap(mm) {
+  if (!mm || (!mm.title && !(mm.branches || []).length)) return '<p class="hint">—</p>';
+  const jumpAttrs = (pi, label) => {
+    if (pi == null || pi === '') return { cls: '', attrs: '', badge: '' };
+    return {
+      cls: ' rd-jump',
+      attrs: ` data-pi="${pi}" title="點擊跳到第 ${Number(pi) + 1} 段：${esc(label || '')}"`,
+      badge: `<span class="mm-time">§${Number(pi) + 1}</span>`,
+    };
+  };
+  const centerJ = jumpAttrs(mm.title_pi, mm.title);
+  const branches = (mm.branches || []).map(b => {
+    const bj = jumpAttrs(b.pi, b.title);
+    const bullets = (b.bullets || []).map(x => {
+      const text = typeof x === 'string' ? x : (x.text || '');
+      const pi = typeof x === 'string' ? undefined : x.pi;
+      const uj = jumpAttrs(pi, text);
+      return `<li class="mm-bullet${uj.cls}"${uj.attrs}>${uj.badge}<span class="mm-bullet-text">${esc(text)}</span></li>`;
+    }).join('');
+    return `<li class="mm-branch">
+      <div class="mm-branch-title${bj.cls}"${bj.attrs}>${bj.badge}<span>${esc(b.title || '')}</span></div>
+      ${bullets ? `<ul class="mm-bullets">${bullets}</ul>` : ''}
+    </li>`;
+  }).join('');
+  return `<div class="mm-map">
+    <div class="mm-center${centerJ.cls}"${centerJ.attrs}>${centerJ.badge}<span>${esc(mm.title || '大綱')}</span></div>
+    ${branches ? `<ul class="mm-branches">${branches}</ul>` : ''}
+  </div>`;
+}
+
+function readerSeekToPara(pi) {
+  const i = parseInt(pi, 10);
+  if (!Number.isFinite(i)) return;
+  const main = document.querySelector('#readerArticle .rd-main');
+  const el = document.querySelector(`#readerArticle .rd-para[data-pi="${i}"]`);
+  if (!el) return;
+  if (main) scrollWithin(main, el);
+  else try { el.scrollIntoView({ block: 'start', behavior: 'smooth' }); } catch {}
+  el.classList.add('rd-para-flash');
+  setTimeout(() => el.classList.remove('rd-para-flash'), 1200);
+}
+
+function renderArticle(book, a) {
+  const el = $('#readerArticle');
+  const re = buildKnownWordRegex();
+  const hasAiAudio = !!(readerAudioSrc(a) && (a.audioCues || []).length);
+  const speed = getReaderSpeed();
+  const speedOpts = [0.75, 1, 1.25, 1.5, 1.75, 2].map(s =>
+    `<option value="${s}"${s === speed ? ' selected' : ''}>${s}x</option>`).join('');
+  // 舊資料補段落跳轉索引
+  if ((a.vocab || []).some(v => v.example_en && v.example_pi == null)
+    || (a.phrases || []).some(p => (p.example_en || p.phrase) && p.example_pi == null)
+    || (a.patterns || []).some(p => (p.example_en || p.pattern) && p.example_pi == null)) {
+    attachReaderExamplePis(a);
+  }
+  if (a.mindmap) attachReaderMindmapPis(a);
+
+  const paras = (a.paragraphs || []).map((p, i) => {
+    const en = highlightKnown(p.en || '', re);
+    const paraHasAi = hasAiAudio && (a.audioCues || []).some(c => c.i === i);
+    return `<div class="rd-para" data-pi="${i}">
+      <p class="rd-en">${en}
+        <button class="speak-btn rd-para-spk" data-speak="${esc(p.en || '')}" data-src="browser" title="瀏覽器朗讀此段" type="button">🔊</button>
+        ${paraHasAi ? `<button class="rd-para-ai" data-pi="${i}" title="AI 語音此段" type="button">🤖</button>` : ''}
+      </p>
+      <p class="rd-zh">${esc(p.zh || '')}</p>
+    </div>`;
+  }).join('') || '<p class="hint">（沒有逐段內容）</p>';
+
+  const vocabHtml = sideVocabHtml(a.vocab, { jumpable: 'para' });
+
+  const phraseHtml = (a.phrases || []).map(p => {
+    const canJump = p.example_pi != null && p.example_pi !== '';
+    const jump = canJump
+      ? ` class="rd-pitem rd-jump" data-pi="${p.example_pi}" title="點擊跳到對應段落"`
+      : ' class="rd-pitem"';
+    return `<div${jump}><b>${esc(p.phrase)}</b>${p.meaning_zh ? ` — ${esc(p.meaning_zh)}` : ''} <button class="speak-btn" data-speak="${esc(p.phrase)}" data-src="browser" type="button">🔊</button></div>`;
+  }).join('') || '<p class="hint">—</p>';
+
+  const patternHtml = (a.patterns || []).map(p => {
+    const canJump = p.example_pi != null && p.example_pi !== '';
+    const jump = canJump
+      ? ` class="rd-pitem rd-jump" data-pi="${p.example_pi}" title="點擊跳到對應段落"`
+      : ' class="rd-pitem"';
+    return `<div${jump}><b>${esc(p.pattern)}</b>${p.explain_zh ? `<div class="rd-vmean">${esc(p.explain_zh)}</div>` : ''}${p.example_en ? `<div class="rd-vex">${esc(p.example_en)} <button class="speak-btn" data-speak="${esc(p.example_en)}" data-src="browser" type="button">🔊</button></div>` : ''}</div>`;
+  }).join('') || '<p class="hint">—</p>';
+
+  const followOn = localStorage.getItem('reader_follow') !== '0';
+  const summaryBody = `<p>${a.summary ? esc(a.summary) : '<span class="hint">—</span>'}</p>`;
+  const mindBody = renderReaderMindmap(a.mindmap);
+
+  el.innerHTML = `
+    <div class="rd-article-head">
+      <h2 class="rd-atitle">${esc(a.title)}</h2>
+      <div class="rd-tools">
+        <label class="rd-speed" title="瀏覽器與 AI 朗讀語速">語速
+          <select id="rdSpeed">${speedOpts}</select>
+        </label>
+        <button class="btn ghost small" id="rdToggleZh" type="button" title="隱藏／顯示中文翻譯">${hideZh ? '顯示中文' : '隱藏中文'}</button>
+        <button class="btn ghost small" id="rdReadAll">🔊 瀏覽器朗讀</button>
+        <button class="btn ghost small" id="rdReadAi">${hasAiAudio ? '▶️ 播放 AI 語音' : '🤖 AI 朗讀整篇'}</button>
+        <button class="btn ghost small" id="rdStop">⏹ 停止</button>
+        <button class="btn ghost small" id="rdReprocess" title="重新用 AI 整理這篇">↻ 重新整理</button>
+      </div>
+    </div>
+    <div class="rd-body-split">
+      <div class="rd-main">
+        <div class="rd-section">
+          <div class="rd-sec-title">📖 逐段中英對照
+            <span class="hint" style="font-weight:400">（雙擊單字加入右側・點右側可跳段）</span>
+            <label class="listen-follow"><input type="checkbox" id="rdFollow"${followOn ? ' checked' : ''} /> 朗讀跟讀</label>
+          </div>
+          ${paras}
+        </div>
+      </div>
+      <aside class="rd-aside">
+        <div class="rd-summary">
+          <div class="rd-sec-title">📌 大意 ${a.summary ? spkZh(a.summary) : ''}</div>
+          ${summaryBody}
+        </div>
+        ${readerCollapseHtml('mindmap', '🧠 心智圖大綱', mindBody)}
+        ${readerCollapseHtml('vocab', '🔑 重要單字', `<div id="rdVocabList">${vocabHtml}</div>`)}
+        ${readerCollapseHtml('phrases', '🧩 重要片語', phraseHtml)}
+        ${readerCollapseHtml('patterns', '🏗 重要句型', patternHtml)}
+      </aside>
+    </div>`;
+  applyHideZh();
+}
 function addListenSideVocab(word, exampleEn, exampleStart) {
   const item = listenItems.find(i => i.id === listenCurrentId);
   if (!item) { toast('請先開啟一則聽力', true); return; }
@@ -3619,60 +3943,6 @@ function scrollListenVocabIntoView(word) {
   void el.offsetWidth;
   el.classList.add('rd-vitem-flash');
   setTimeout(() => el.classList.remove('rd-vitem-flash'), 1600);
-}
-
-function renderArticle(book, a) {
-  const el = $('#readerArticle');
-  const re = buildKnownWordRegex();
-  const hasAiAudio = !!(readerAudioSrc(a) && (a.audioCues || []).length);
-  const speed = getReaderSpeed();
-  const speedOpts = [0.75, 1, 1.25, 1.5, 1.75, 2].map(s =>
-    `<option value="${s}"${s === speed ? ' selected' : ''}>${s}x</option>`).join('');
-  const paras = (a.paragraphs || []).map((p, i) => {
-    const en = highlightKnown(p.en || '', re);
-    const paraHasAi = hasAiAudio && (a.audioCues || []).some(c => c.i === i);
-    return `<div class="rd-para" data-pi="${i}">
-      <p class="rd-en">${en}
-        <button class="speak-btn rd-para-spk" data-speak="${esc(p.en || '')}" data-src="browser" title="瀏覽器朗讀此段" type="button">🔊</button>
-        ${paraHasAi ? `<button class="rd-para-ai" data-pi="${i}" title="AI 語音此段" type="button">🤖</button>` : ''}
-      </p>
-      <p class="rd-zh">${esc(p.zh || '')}</p>
-    </div>`;
-  }).join('') || '<p class="hint">（沒有逐段內容）</p>';
-
-  const vocabHtml = sideVocabHtml(a.vocab);
-
-  const phraseHtml = (a.phrases || []).map(p => `<div class="rd-pitem"><b>${esc(p.phrase)}</b>${p.meaning_zh ? ` — ${esc(p.meaning_zh)}` : ''} <button class="speak-btn" data-speak="${esc(p.phrase)}" data-src="browser" type="button">🔊</button></div>`).join('') || '<p class="hint">—</p>';
-
-  const patternHtml = (a.patterns || []).map(p => `<div class="rd-pitem"><b>${esc(p.pattern)}</b>${p.explain_zh ? `<div class="rd-vmean">${esc(p.explain_zh)}</div>` : ''}${p.example_en ? `<div class="rd-vex">${esc(p.example_en)} <button class="speak-btn" data-speak="${esc(p.example_en)}" data-src="browser" type="button">🔊</button></div>` : ''}</div>`).join('') || '<p class="hint">—</p>';
-
-  el.innerHTML = `
-    <div class="rd-article-head">
-      <h2 class="rd-atitle">${esc(a.title)}</h2>
-      <div class="rd-tools">
-        <label class="rd-speed" title="瀏覽器與 AI 朗讀語速">語速
-          <select id="rdSpeed">${speedOpts}</select>
-        </label>
-        <button class="btn ghost small" id="rdToggleZh" type="button" title="隱藏／顯示中文翻譯">${hideZh ? '顯示中文' : '隱藏中文'}</button>
-        <button class="btn ghost small" id="rdReadAll">🔊 瀏覽器朗讀</button>
-        <button class="btn ghost small" id="rdReadAi">${hasAiAudio ? '▶️ 播放 AI 語音' : '🤖 AI 朗讀整篇'}</button>
-        <button class="btn ghost small" id="rdStop">⏹ 停止</button>
-        <button class="btn ghost small" id="rdReprocess" title="重新用 AI 整理這篇">↻ 重新整理</button>
-      </div>
-    </div>
-    ${a.summary ? `<div class="rd-summary"><div class="rd-sec-title">📌 段落大意 ${spkZh(a.summary)}</div><p>${esc(a.summary)}</p></div>` : ''}
-    <div class="rd-body-split">
-      <div class="rd-main">
-        <div class="rd-section"><div class="rd-sec-title">📖 逐段中英對照${hasAiAudio ? ' <span class="hint" style="font-weight:400">（每段可按 🤖 聽 AI 語音）</span>' : ''} <span class="hint" style="font-weight:400">（雙擊單字可加入右側）</span></div>${paras}</div>
-      </div>
-      <aside class="rd-aside">
-        <div class="rd-section"><div class="rd-sec-title">🔑 重要單字</div><div id="rdVocabList">${vocabHtml}</div></div>
-        <div class="rd-section"><div class="rd-sec-title">🧩 重要片語</div>${phraseHtml}</div>
-        <div class="rd-section"><div class="rd-sec-title">🏗 重要句型</div>${patternHtml}</div>
-      </aside>
-    </div>`;
-  el.scrollTop = 0;
-  applyHideZh();
 }
 
 /* ---------- 加入詞庫彈窗 ---------- */
@@ -3889,6 +4159,20 @@ function bindReader() {
       return;
     }
     if (e.target.closest('.speak-btn')) return; // 交給全域喇叭
+    const head = e.target.closest('.rd-collapse-head');
+    if (head) {
+      const box = head.closest('.rd-collapse');
+      if (box) {
+        box.classList.toggle('collapsed');
+        setReaderCollapse(box.dataset.collapse, box.classList.contains('collapsed'));
+      }
+      return;
+    }
+    const jump = e.target.closest('.rd-jump');
+    if (jump && jump.dataset.pi != null) {
+      readerSeekToPara(jump.dataset.pi);
+      return;
+    }
     const add = e.target.closest('.rd-add-vocab');
     if (add) { openReaderAdd(add.dataset.word, add.dataset.ex); return; }
     if (e.target.closest('#rdToggleZh')) { toggleHideZh(); return; }
@@ -3917,6 +4201,9 @@ function bindReader() {
       setReaderSpeed(e.target.value);
       toast(`語速已設為 ${getReaderSpeed()}x`);
     }
+    if (e.target && e.target.id === 'rdFollow') {
+      localStorage.setItem('reader_follow', e.target.checked ? '1' : '0');
+    }
   });
   $('#readerArticle')?.addEventListener('dblclick', e => {
     if (!e.target.closest('.rd-en, .rd-para')) return;
@@ -3924,7 +4211,8 @@ function bindReader() {
     if (!word) return;
     const para = e.target.closest('.rd-para');
     const example = plainEnText(para?.querySelector('.rd-en'));
-    addReaderSideVocab(word, example);
+    const pi = para ? parseInt(para.dataset.pi, 10) : undefined;
+    addReaderSideVocab(word, example, Number.isFinite(pi) ? pi : undefined);
   });
 
   // 加入詞庫彈窗

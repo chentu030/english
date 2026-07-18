@@ -851,9 +851,12 @@ body.modal-open { overflow: hidden; }
 .reader-book-tools { display: flex; gap: 6px; flex-shrink: 0; }
 .reader-book-bar .btn.small { padding: 4px 10px; font-size: 12px; }
 
-.reader-split { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
+.reader-split {
+  display: grid; grid-template-columns: 260px 1fr; gap: 12px;
+  align-items: stretch; flex: 1; min-height: 0; overflow: hidden;
+}
 .reader-toc {
-  position: sticky; top: 72px; max-height: calc(100vh - 96px); overflow-y: auto;
+  min-height: 0; height: 100%; overflow-y: auto;
   background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: 8px;
 }
 .rd-toc-head {
@@ -871,17 +874,58 @@ body.modal-open { overflow: hidden; }
 .rd-toc-sec { font-size: 11px; color: var(--text-mute); }
 .rd-toc-flag { font-size: 11px; color: var(--text-soft); }
 
+/* 開啟書本時：整頁鎖高，標題／頂欄不跟著滾走（與聽力頁同策略） */
+body:has(#view-reader.active #readerBook:not([hidden])) {
+  height: 100dvh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+body:has(#view-reader.active #readerBook:not([hidden])) .topbar { flex-shrink: 0; }
+body:has(#view-reader.active #readerBook:not([hidden])) .container {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 1600px;
+  padding: 10px 20px 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+#view-reader.active:has(#readerBook:not([hidden])) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  animation: none;
+}
+#readerBook.reader-book:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+#readerBook.reader-book[hidden] { display: none !important; }
+#readerBook .reader-book-bar { flex-shrink: 0; margin-bottom: 6px; }
+
 .reader-article {
   background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 20px; min-height: 300px;
+  padding: 14px 16px; min-height: 0; height: 100%;
+  display: flex; flex-direction: column; overflow: hidden;
 }
 .rd-processing { display: flex; align-items: center; gap: 10px; color: var(--text-soft); padding: 30px 0; justify-content: center; }
-.rd-article-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
-.rd-atitle { margin: 0; font-size: 22px; flex: 1; min-width: 180px; }
+.rd-article-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap; margin-bottom: 10px; flex-shrink: 0;
+}
+.rd-atitle { margin: 0; font-size: 20px; flex: 1; min-width: 180px; line-height: 1.3; }
 .rd-tools { display: flex; gap: 6px; flex-wrap: wrap; }
-.rd-summary { background: var(--bg-soft); border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 16px; }
+.rd-summary { background: var(--bg-soft); border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 12px; }
 .rd-summary p { margin: 6px 0 0; line-height: 1.7; }
-.rd-sec-title { font-weight: 700; color: var(--text); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+.rd-sec-title { font-weight: 700; color: var(--text); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .rd-section { margin-bottom: 20px; }
 .rd-para { margin-bottom: 14px; padding: 8px 10px; border-bottom: 1px dashed var(--border); border-radius: 6px; transition: background .15s ease; }
 .rd-para.reading {
@@ -889,17 +933,24 @@ body.modal-open { overflow: hidden; }
   border-bottom-color: transparent;
   box-shadow: inset 3px 0 0 #3b82f6;
 }
+.rd-para.rd-para-flash {
+  animation: rdVitemFlash 1.2s ease;
+}
 [data-theme="dark"] .rd-para.reading { background: rgba(59, 130, 246, .28); }
 .rd-en { margin: 0 0 4px; line-height: 1.8; color: var(--text); }
 .rd-zh { margin: 0; line-height: 1.7; color: var(--text-soft); font-size: 14px; }
 .rd-known { background: rgba(255, 214, 10, .45); border-radius: 3px; padding: 0 2px; color: inherit; }
 [data-theme="dark"] .rd-known { background: rgba(255, 214, 10, .3); }
 .rd-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
-/* 文章正文（左）＋重點區（右）並排，方便邊讀邊對照 */
-.rd-body-split { display: grid; grid-template-columns: 1fr 320px; gap: 20px; align-items: start; }
-.rd-main { min-width: 0; }
+/* 文章正文（左）＋重點區（右）並排；各自獨立捲動 */
+.rd-body-split {
+  display: grid; grid-template-columns: 1fr minmax(280px, 34%); gap: 14px;
+  align-items: stretch; flex: 1; min-height: 0; overflow: hidden;
+}
+.rd-main { min-width: 0; min-height: 0; height: 100%; overflow-y: auto; padding-right: 4px; }
 .rd-aside {
-  position: sticky; top: 72px; max-height: calc(100vh - 96px); overflow-y: auto;
+  position: static; max-height: none;
+  min-height: 0; height: 100%; overflow-y: auto;
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 12px 14px;
 }
@@ -910,8 +961,10 @@ body.modal-open { overflow: hidden; }
 .rd-vword { font-size: 15px; }
 .rd-vmean { color: var(--text-soft); font-size: 13px; margin-top: 2px; }
 .rd-vex { font-size: 13px; margin-top: 3px; }
-.rd-vex.ls-jump { cursor: pointer; border-radius: 4px; padding: 2px 4px; margin-left: -4px; }
-.rd-vex.ls-jump:hover { background: var(--primary-soft); }
+.rd-vex.ls-jump, .rd-vex.rd-jump, .rd-pitem.rd-jump {
+  cursor: pointer; border-radius: 4px; padding: 2px 4px; margin-left: -4px;
+}
+.rd-vex.ls-jump:hover, .rd-vex.rd-jump:hover, .rd-pitem.rd-jump:hover { background: var(--primary-soft); }
 .rd-vexzh { font-size: 12px; color: var(--text-mute); }
 .rd-pitem { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
 .rd-para-spk { vertical-align: middle; }
@@ -926,17 +979,18 @@ body.modal-open { overflow: hidden; }
   display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-soft); font-weight: 500;
 }
 .rd-speed select {
-  padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm);
-  background: var(--bg); color: var(--text); font-size: 13px;
+  padding: 4px 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  border-radius: var(--radius-sm); font-size: 13px;
 }
 
 @media (max-width: 1080px) {
   .rd-body-split { grid-template-columns: 1fr; }
-  .rd-aside { position: static; max-height: none; }
+  .rd-aside { position: static; max-height: none; height: auto; }
+  .rd-main { height: auto; max-height: 50vh; }
 }
 @media (max-width: 720px) {
-  .reader-split { grid-template-columns: 1fr; }
-  .reader-toc { position: static; max-height: 240px; }
+  .reader-split { grid-template-columns: 1fr; height: auto; overflow: visible; }
+  .reader-toc { position: static; max-height: 200px; height: auto; }
 }
 
 /* ===================== 聽力 ===================== */
@@ -1069,8 +1123,10 @@ html.hide-zh .ls-zh { display: none !important; }
   border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; text-align: center;
   display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;
 }
-.mm-center.ls-jump, .mm-branch-title.ls-jump, .mm-bullet.ls-jump { cursor: pointer; }
-.mm-center.ls-jump:hover, .mm-branch-title.ls-jump:hover, .mm-bullet.ls-jump:hover {
+.mm-center.ls-jump, .mm-branch-title.ls-jump, .mm-bullet.ls-jump,
+.mm-center.rd-jump, .mm-branch-title.rd-jump, .mm-bullet.rd-jump { cursor: pointer; }
+.mm-center.ls-jump:hover, .mm-branch-title.ls-jump:hover, .mm-bullet.ls-jump:hover,
+.mm-center.rd-jump:hover, .mm-branch-title.rd-jump:hover, .mm-bullet.rd-jump:hover {
   background: var(--primary-soft);
 }
 .mm-branches { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -1135,4 +1191,18 @@ html.hide-zh .ls-zh { display: none !important; }
   .listen-player { width: 100%; }
   .listen-side { height: auto; max-height: none; }
   .listen-transcript { max-height: 40vh; flex: none; }
+
+  body:has(#view-reader.active #readerBook:not([hidden])) { height: auto; overflow: auto; display: block; }
+  body:has(#view-reader.active #readerBook:not([hidden])) .container {
+    height: auto; max-height: none; overflow: visible; display: block; padding: 14px 14px 40px;
+  }
+  #view-reader.active:has(#readerBook:not([hidden])) {
+    display: block; height: auto; overflow: visible;
+  }
+  #readerBook.reader-book:not([hidden]) { display: block; height: auto; overflow: visible; }
+  .reader-split { height: auto; overflow: visible; }
+  .reader-article { height: auto; overflow: visible; display: block; }
+  .rd-body-split { height: auto; overflow: visible; }
+  .rd-main { max-height: none; height: auto; }
+  .rd-aside { height: auto; }
 }
