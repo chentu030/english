@@ -908,13 +908,14 @@ body:has(#listenItem:not([hidden])) .container {
   overflow: hidden;
   animation: none;
 }
-#listenItem.reader-book {
+#listenItem.reader-book:not([hidden]) {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow: hidden;
 }
+#listenItem.reader-book[hidden] { display: none !important; }
 #listenItem .reader-book-bar { flex-shrink: 0; margin-bottom: 6px; }
 
 .listen-split {
@@ -989,7 +990,7 @@ html.hide-zh .ls-zh { display: none !important; }
   #view-listen.active:has(#listenItem:not([hidden])) {
     display: block; height: auto; overflow: visible;
   }
-  #listenItem.reader-book { display: block; height: auto; overflow: visible; }
+  #listenItem.reader-book:not([hidden]) { display: block; height: auto; overflow: visible; }
   .listen-split { grid-template-columns: 1fr; height: auto; overflow: visible; }
   .listen-resizer { display: none; }
   .listen-left { height: auto; max-height: none; overflow: visible; }
