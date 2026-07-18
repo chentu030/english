@@ -3672,6 +3672,62 @@ async function analyzeListen(item, showStage) {
   saveListenLocal();
 }
 
+// 只重新翻譯未完成／失敗的段落
+async function relistenTranslate(item) {
+  const todo = (item.segments || []).map((s, i) => ({ s, i })).filter(x => !x.s.zh || /翻譯失敗/.test(x.s.zh));
+  if (!todo.length) { toast('沒有需要重新翻譯的段落'); return; }
+  const btn = $('#listenRetranslate'); const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; }
+  const CH = 40;
+  const schema = { type: 'object', properties: { translations: { type: 'array', items: { type: 'string' } } }, required: ['translations'] };
+  try {
+    for (let i = 0; i < todo.length; i += CH) {
+      if (btn) btn.textContent = `翻譯中 ${Math.min(i + CH, todo.length)}/${todo.length}…`;
+      const part = todo.slice(i, i + CH);
+      const prompt = `把下面每一行英文翻成繁體中文。回傳 translations 陣列，長度與行數完全相同、順序一致（第 n 行對應第 n 個）。只輸出 JSON。\n\n${part.map((x, idx) => `${idx + 1}. ${x.s.en}`).join('\n')}`;
+      try {
+        const out = await readerJSON(prompt, schema, 0.3);
+        (out.translations || []).forEach((z, idx) => { if (part[idx] && z) part[idx].s.zh = z; });
+      } catch (e) { console.error('重新翻譯失敗', e); }
+      saveListen();
+    }
+    if (listenCurrentId === item.id) renderListenItem(item);
+    toast('重新翻譯完成');
+  } finally { if (btn) { btn.disabled = false; btn.textContent = orig; } }
+}
+
+// 重新生成某一部分重點（summary / vocab / phrases / grammar）
+async function relistenAnalyze(item, part) {
+  const text = (item.segments || []).map(s => s.en).join(' ').slice(0, 16000);
+  if (!text.trim()) { toast('沒有逐字稿內容', true); return; }
+  let schema, prompt, apply;
+  if (part === 'summary') {
+    schema = { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'] };
+    prompt = `用繁體中文寫出以下逐字稿的整體大意（3–5 句）。只輸出 JSON。\n\n逐字稿：\n${text}`;
+    apply = o => { item.summary = o.summary || ''; };
+  } else if (part === 'vocab') {
+    schema = { type: 'object', properties: { vocab: { type: 'array', items: { type: 'object', properties: { word: { type: 'string' }, meaning_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['word'] } } }, required: ['vocab'] };
+    prompt = `你是英語聽力老師。從以下逐字稿挑出 10–15 個重要單字，用繁體中文附中文意思(meaning_zh)與一個例句(example_en，優先取自逐字稿)。只輸出 JSON。\n\n逐字稿：\n${text}`;
+    apply = o => { item.vocab = o.vocab || []; };
+  } else if (part === 'phrases') {
+    schema = { type: 'object', properties: { phrases: { type: 'array', items: { type: 'object', properties: { phrase: { type: 'string' }, meaning_zh: { type: 'string' } }, required: ['phrase'] } } }, required: ['phrases'] };
+    prompt = `從以下逐字稿挑出 5–10 個重要片語／口語搭配，附繁體中文意思(meaning_zh)。只輸出 JSON。\n\n逐字稿：\n${text}`;
+    apply = o => { item.phrases = o.phrases || []; };
+  } else if (part === 'grammar') {
+    schema = { type: 'object', properties: { grammar: { type: 'array', items: { type: 'object', properties: { point: { type: 'string' }, explain_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['point'] } } }, required: ['grammar'] };
+    prompt = `從以下逐字稿挑出 3–6 個重要文法／句型重點，用繁體中文說明用法(explain_zh)並附例句(example_en)。只輸出 JSON。\n\n逐字稿：\n${text}`;
+    apply = o => { item.grammar = o.grammar || []; };
+  } else return;
+  const label = { summary: '大意', vocab: '重要單字', phrases: '重要片語', grammar: '重要文法' }[part];
+  toast(`重新整理${label}中…`);
+  try {
+    const out = await readerJSON(prompt, schema, 0.5);
+    apply(out); item.updatedAt = now(); saveListen();
+    if (listenCurrentId === item.id) renderListenItem(item);
+    toast(`${label}已重新整理`);
+  } catch (e) { toast(`重新整理${label}失敗：` + e.message, true); }
+}
+
 /* ---------- 渲染單一聽力：播放器 + 逐字稿 + 右側重點 ---------- */
 function fmtTime(sec) {
   sec = Math.max(0, Math.floor(sec || 0));
@@ -3711,11 +3767,12 @@ function renderListenItem(item) {
       </div>`).join('') || '<p class="hint">—</p>';
     const phraseHtml = (item.phrases || []).map(p => `<div class="rd-pitem"><b>${esc(p.phrase)}</b>${p.meaning_zh ? ` — ${esc(p.meaning_zh)}` : ''} <button class="speak-btn" data-speak="${esc(p.phrase)}" data-src="browser" type="button">🔊</button></div>`).join('') || '<p class="hint">—</p>';
     const grammarHtml = (item.grammar || []).map(g => `<div class="rd-pitem"><b>${esc(g.point)}</b>${g.explain_zh ? `<div class="rd-vmean">${esc(g.explain_zh)}</div>` : ''}${g.example_en ? `<div class="rd-vex">${esc(g.example_en)} <button class="speak-btn" data-speak="${esc(g.example_en)}" data-src="browser" type="button">🔊</button></div>` : ''}</div>`).join('') || '<p class="hint">—</p>';
+    const regen = part => `<button class="btn ghost small ls-regen" data-lspart="${part}" title="重新生成這部分">↻</button>`;
     side.innerHTML = `
-      ${item.summary ? `<div class="rd-summary"><div class="rd-sec-title">📌 大意 ${spkZh(item.summary)}</div><p>${esc(item.summary)}</p></div>` : ''}
-      <div class="rd-section"><div class="rd-sec-title">🔑 重要單字</div>${vocabHtml}</div>
-      <div class="rd-section"><div class="rd-sec-title">🧩 重要片語</div>${phraseHtml}</div>
-      <div class="rd-section"><div class="rd-sec-title">🏗 重要文法</div>${grammarHtml}</div>`;
+      <div class="rd-summary"><div class="rd-sec-title">📌 大意 ${item.summary ? spkZh(item.summary) : ''} ${regen('summary')}</div><p>${item.summary ? esc(item.summary) : '<span class="hint">—</span>'}</p></div>
+      <div class="rd-section"><div class="rd-sec-title">🔑 重要單字 ${regen('vocab')}</div>${vocabHtml}</div>
+      <div class="rd-section"><div class="rd-sec-title">🧩 重要片語 ${regen('phrases')}</div>${phraseHtml}</div>
+      <div class="rd-section"><div class="rd-sec-title">🏗 重要文法 ${regen('grammar')}</div>${grammarHtml}</div>`;
   } else if (item.status !== 'error') {
     side.innerHTML = '<div class="ls-processing"><span class="spinner"></span> 整理重點中…</div>';
   } else {
@@ -3836,8 +3893,14 @@ function bindListen() {
     const seg = e.target.closest('.ls-seg');
     if (seg) listenSeekTo(parseFloat(seg.dataset.start) || 0);
   });
+  $('#listenRetranslate')?.addEventListener('click', () => {
+    const it = listenItems.find(i => i.id === listenCurrentId);
+    if (it) relistenTranslate(it);
+  });
   $('#listenSide')?.addEventListener('click', e => {
     if (e.target.closest('.speak-btn')) return;
+    const regen = e.target.closest('.ls-regen');
+    if (regen) { const it = listenItems.find(i => i.id === listenCurrentId); if (it) relistenAnalyze(it, regen.dataset.lspart); return; }
     const add = e.target.closest('.rd-add-vocab');
     if (add) openReaderAdd(add.dataset.word, add.dataset.ex);
   });
