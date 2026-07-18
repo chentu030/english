@@ -5518,6 +5518,8 @@ async function listenForceCc(item) {
     fd.append('url', 'https://www.youtube.com/watch?v=' + item.videoId);
     fd.append('language', listenWhisperLang());
     // 不帶 force_whisper → 後端優先 CC
+    // 雲端 IP 常被 YouTube 擋，後端可能要換路徑／代理，通常數十秒；若前面還有 Whisper／批次佇列會更久
+    showStage('抓 CC 中（雲端直連常被擋，可能需數十秒）…');
     const res = await fetch(listenBackend() + '/beidanzi/youtube', { method: 'POST', body: fd });
     if (!res.ok) throw new Error('後端回應錯誤 ' + res.status);
     const j = await res.json();
