@@ -416,7 +416,8 @@ function spkZh(text) {
 function makeUtterance(text, lang) {
   const u = new SpeechSynthesisUtterance(text);
   u.lang = lang;
-  u.rate = 0.95;
+  // 閱讀頁：一律用目前語速設定（每次新建 utterance 都重新讀取）
+  u.rate = ($('#view-reader') && $('#view-reader').classList.contains('active')) ? getReaderSpeed() : 0.95;
   const voices = window.speechSynthesis.getVoices();
   const pre = lang.slice(0, 2).toLowerCase();
   const same = voices.filter(x => x.lang && x.lang.toLowerCase().startsWith(pre));
@@ -3168,11 +3169,26 @@ async function processArticle(book, toc) {
 let readerAudioEl = null;
 let readerSpeakIdx = -1;
 let readerSpeed = parseFloat(localStorage.getItem('reader_speed') || '1') || 1;
-function getReaderSpeed() { return readerSpeed; }
+function getReaderSpeed() {
+  // 優先讀畫面上的語速選單，避免變數與 UI 不同步
+  const sel = document.getElementById('rdSpeed');
+  if (sel && sel.value) {
+    const v = parseFloat(sel.value);
+    if (!Number.isNaN(v) && v > 0) {
+      readerSpeed = Math.max(0.5, Math.min(2, v));
+      return readerSpeed;
+    }
+  }
+  return readerSpeed;
+}
 function setReaderSpeed(v) {
   readerSpeed = Math.max(0.5, Math.min(2, parseFloat(v) || 1));
   localStorage.setItem('reader_speed', String(readerSpeed));
-  if (readerAudioEl) readerAudioEl.playbackRate = readerSpeed;
+  const sel = document.getElementById('rdSpeed');
+  if (sel && String(sel.value) !== String(readerSpeed)) sel.value = String(readerSpeed);
+  if (readerAudioEl) {
+    try { readerAudioEl.playbackRate = readerSpeed; } catch {}
+  }
 }
 function readerAudioSrc(a) { return (a && (a.audioUrl || a.audioLocalUrl)) || ''; }
 function clearReadingHighlight() {
@@ -3202,15 +3218,25 @@ function readerPlayUrl(url, cues, opts = {}) {
   const startAt = opts.startAt || 0;
   const endAt = opts.endAt;
   readerAudioEl = new Audio(url);
-  readerAudioEl.playbackRate = getReaderSpeed();
+  const applyRate = () => {
+    if (!readerAudioEl) return;
+    try { readerAudioEl.playbackRate = getReaderSpeed(); } catch {}
+  };
   const applyStart = () => {
     if (startAt > 0 && readerAudioEl) {
       try { readerAudioEl.currentTime = startAt; } catch {}
     }
   };
-  readerAudioEl.addEventListener('loadedmetadata', applyStart);
+  applyRate();
+  readerAudioEl.addEventListener('loadedmetadata', () => { applyRate(); applyStart(); });
+  readerAudioEl.addEventListener('ratechange', () => {
+    // 某些瀏覽器在 load/seek 後會把 rate 重設成 1，強制拉回來
+    if (readerAudioEl && Math.abs(readerAudioEl.playbackRate - getReaderSpeed()) > 0.01) applyRate();
+  });
   readerAudioEl.addEventListener('timeupdate', () => {
     if (!readerAudioEl) return;
+    // 播放中也持續確保語速正確
+    if (Math.abs(readerAudioEl.playbackRate - getReaderSpeed()) > 0.01) applyRate();
     const t = readerAudioEl.currentTime;
     if (endAt != null && t >= endAt - 0.05) {
       readerAudioEl.pause();
@@ -3224,9 +3250,12 @@ function readerPlayUrl(url, cues, opts = {}) {
     }
   });
   readerAudioEl.addEventListener('ended', clearReadingHighlight);
-  const play = () => readerAudioEl.play().catch(e => toast('播放失敗：' + e.message, true));
+  const play = () => {
+    applyRate();
+    readerAudioEl.play().catch(e => toast('播放失敗：' + e.message, true));
+  };
   if (startAt > 0) {
-    readerAudioEl.addEventListener('canplay', () => { applyStart(); play(); }, { once: true });
+    readerAudioEl.addEventListener('canplay', () => { applyStart(); applyRate(); play(); }, { once: true });
     readerAudioEl.load();
   } else {
     play();
@@ -3249,14 +3278,13 @@ function speakArticleWithHighlight(a) {
   readerStopAudio();
   const jobs = (a.paragraphs || []).map((p, i) => ({ i, text: (p.en || '').trim() })).filter(j => j.text);
   if (!jobs.length) { toast('沒有內容可朗讀', true); return; }
-  const rate = getReaderSpeed();
   let n = 0;
   const next = () => {
     if (n >= jobs.length) { clearReadingHighlight(); return; }
     const job = jobs[n++];
     highlightReadingPara(job.i);
     const u = makeUtterance(job.text, TARGET_LANG());
-    u.rate = rate;
+    u.rate = getReaderSpeed(); // 每一段都重新套用語速
     u.onend = next;
     u.onerror = next;
     window.speechSynthesis.speak(u);
@@ -4089,7 +4117,22 @@ function listenSetActiveByTime(t) {
   const el = cont.querySelector(`.ls-seg[data-i="${idx}"]`);
   if (el) {
     el.classList.add('active');
-    if ($('#listenFollow')?.checked) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    // 只在逐字稿容器內捲動，不要用 scrollIntoView（會把上方影片一起捲掉）
+    if ($('#listenFollow')?.checked) scrollWithin(cont, el);
+  }
+}
+
+// 在可捲動容器內把元素捲到中央（不影響外層頁面／播放器）
+function scrollWithin(container, el) {
+  if (!container || !el) return;
+  const cRect = container.getBoundingClientRect();
+  const eRect = el.getBoundingClientRect();
+  const delta = (eRect.top + eRect.height / 2) - (cRect.top + cRect.height / 2);
+  const next = container.scrollTop + delta;
+  try {
+    container.scrollTo({ top: next, behavior: 'smooth' });
+  } catch {
+    container.scrollTop = next;
   }
 }
 
