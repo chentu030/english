@@ -363,6 +363,8 @@ function pcmDurationSec(bytes, sampleRate) {
 let ttsBusy = false;
 /** 新增預覽尚未存檔時，暫存已生成的 AI 語音網址 */
 let pendingTtsHolder = { ttsUrls: {} };
+/** 本機 AI 語音快取（Cache API；即使雲端上傳失敗，同瀏覽器也可重播） */
+const TTS_CACHE_NAME = 'beidanzi-tts-v1';
 
 function ttsCacheKey(text) {
   const t = String(text || '').trim().replace(/\s+/g, ' ');
@@ -373,9 +375,57 @@ function ttsCacheKey(text) {
   return `${t.slice(0, 48)}#${(h >>> 0).toString(36)}`;
 }
 
-/** 找出目前操作中的字卡（詳情／編輯／背誦／新增預覽） */
-function resolveTtsCard() {
+function ttsLocalCacheKey(cardId, textKey) {
+  return `https://tts.local/${encodeURIComponent(String(cardId || '_'))}/${encodeURIComponent(textKey)}`;
+}
+
+async function getLocalTtsBlob(cardId, textKey) {
+  if (!textKey || !('caches' in window)) return null;
+  try {
+    const cache = await caches.open(TTS_CACHE_NAME);
+    const res = await cache.match(ttsLocalCacheKey(cardId, textKey));
+    if (!res) return null;
+    return await res.blob();
+  } catch { return null; }
+}
+
+async function putLocalTtsBlob(cardId, textKey, blob) {
+  if (!textKey || !blob || !('caches' in window)) return;
+  try {
+    const cache = await caches.open(TTS_CACHE_NAME);
+    await cache.put(ttsLocalCacheKey(cardId, textKey), new Response(blob, { headers: { 'Content-Type': 'audio/wav' } }));
+  } catch (e) { console.warn('本機 AI 語音快取寫入失敗', e); }
+}
+
+/** 找出目前操作中的字卡（詞庫卡／詳情／編輯／背誦／新增預覽） */
+function resolveTtsCard(el) {
+  if (el && el.closest) {
+    const wc = el.closest('.word-card[data-id]');
+    if (wc?.dataset?.id) {
+      const c = cards.find(x => x.id === wc.dataset.id);
+      if (c) return c;
+    }
+    if (el.closest('#cardModal, #modalBody') && modalCardId) {
+      const c = cards.find(x => x.id === modalCardId);
+      if (c) return c;
+    }
+    if (el.closest('#studyCard, #view-study, #cardFront, #cardBack')) {
+      try {
+        if (session?.queue?.length) {
+          const item = currentItem();
+          if (item) {
+            const c = cards.find(x => x.id === item.cardId);
+            if (c) return c;
+          }
+        }
+      } catch { /* ignore */ }
+    }
+  }
   if (currentEntry?.card) return currentEntry.card;
+  if (typeof modalCardId === 'string' && modalCardId) {
+    const c = cards.find(x => x.id === modalCardId);
+    if (c) return c;
+  }
   try {
     if (session?.queue?.length && $('#studyCard') && !$('#studyCard').hidden) {
       const item = currentItem();
@@ -416,29 +466,59 @@ async function playAudioUrl(url) {
     let settled = false;
     const ok = () => { if (!settled) { settled = true; resolve(); } };
     const fail = (err) => { if (!settled) { settled = true; reject(err || new Error('play failed')); } };
+    a.onended = () => ok();
     a.onerror = () => fail(new Error('load failed'));
-    a.onplaying = () => ok();
+    a.onplaying = () => { /* 開始播就算成功，不必等播完才繼續 */ if (!settled) { settled = true; resolve(); } };
     const p = a.play();
     if (p && typeof p.then === 'function') p.catch(fail);
     setTimeout(() => fail(new Error('timeout')), 12000);
   });
 }
 
-async function speakGeminiTTS(text) {
+async function playAudioBlob(blob) {
+  const url = URL.createObjectURL(blob);
+  try {
+    await playAudioUrl(url);
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+}
+
+async function speakGeminiTTS(text, el) {
   if (!text) return;
   const key = ttsCacheKey(text);
-  const card = resolveTtsCard();
-  const cached = key && card?.ttsUrls?.[key];
+  const card = resolveTtsCard(el);
+  const cardId = card?.id || (card === pendingTtsHolder ? '_pending' : '_');
+  const remote = key && card?.ttsUrls?.[key];
 
-  if (cached) {
+  // 1) 字卡上已存的雲端網址
+  if (remote) {
     try {
-      await playAudioUrl(cached);
+      await playAudioUrl(remote);
       return;
     } catch {
       if (card?.ttsUrls) {
         delete card.ttsUrls[key];
         if (card.id) { saveCards(); cloudUpsert(card); }
       }
+    }
+  }
+
+  // 2) 本機 Cache（同瀏覽器已生成過就直接播）
+  if (key) {
+    const localBlob = await getLocalTtsBlob(cardId, key)
+      || (cardId !== '_' ? await getLocalTtsBlob('_', key) : null);
+    if (localBlob) {
+      try {
+        await playAudioBlob(localBlob);
+        // 有字卡但還沒雲端網址：背景補上傳
+        if (card && key && !card.ttsUrls?.[key]) {
+          uploadTtsWavBlob(localBlob, `tts-${Date.now()}.wav`)
+            .then(url => saveTtsUrlToCard(card, key, url))
+            .catch(() => {});
+        }
+        return;
+      } catch { /* 本機壞掉就重新生成 */ }
     }
   }
 
@@ -460,15 +540,23 @@ async function speakGeminiTTS(text) {
     ttsBusy = false;
   }
 
-  // 背景上傳：音檔進 Storage，網址寫入字卡（同步到 Firestore）
-  if (generated && card && key) {
-    try {
-      const blob = pcmChunksToWavBlob([b64ToBytes(generated.b64)], generated.rate);
-      const url = await uploadTtsWavBlob(blob, `tts-${Date.now()}.wav`);
-      saveTtsUrlToCard(card, key, url);
-    } catch (e) {
-      console.warn('AI 語音雲端保存失敗', e);
+  if (!generated || !key) return;
+
+  // 3) 寫入本機快取；有字卡則上傳 Storage 並存進 ttsUrls（下次／換裝置可重用）
+  try {
+    const blob = pcmChunksToWavBlob([b64ToBytes(generated.b64)], generated.rate);
+    await putLocalTtsBlob(cardId, key, blob);
+    if (cardId !== '_') await putLocalTtsBlob('_', key, blob);
+    if (card) {
+      try {
+        const url = await uploadTtsWavBlob(blob, `tts-${Date.now()}.wav`);
+        saveTtsUrlToCard(card, key, url);
+      } catch (e) {
+        console.warn('AI 語音雲端保存失敗（本機已快取）', e);
+      }
     }
+  } catch (e) {
+    console.warn('AI 語音保存失敗', e);
   }
 }
 
@@ -484,7 +572,7 @@ function spkWord3(text) {
   } else {
     inner = btn('dict', '🔊真人', `${L().label}真人錄音`);
   }
-  inner += btn('browser', '🔊瀏', '瀏覽器語音') + btn('ai', '🤖', 'AI 語音（臨時生成）');
+  inner += btn('browser', '🔊瀏', '瀏覽器語音') + btn('ai', '🤖', 'AI 語音（會記住，下次直接播放）');
   return `<span class="spk-group">${inner}</span>`;
 }
 // 一般單字（詞形變化、派生詞）：依設定口音的字典發音 + AI
@@ -492,21 +580,21 @@ function spkw(word) {
   if (!word) return '';
   const t = esc(word);
   return `<button class="speak-btn" data-speak="${t}" data-src="dict" title="真人錄音發音" type="button">🔊</button>`
-    + `<button class="speak-btn" data-speak="${t}" data-src="ai" title="AI 語音" type="button">🤖</button>`;
+    + `<button class="speak-btn" data-speak="${t}" data-src="ai" title="AI 語音（會記住）" type="button">🤖</button>`;
 }
 // 句子：瀏覽器語音 + AI
 function spk(text) {
   if (!text) return '';
   const t = esc(text);
   return `<button class="speak-btn" data-speak="${t}" data-src="browser" title="瀏覽器語音" type="button">🔊</button>`
-    + `<button class="speak-btn" data-speak="${t}" data-src="ai" title="AI 語音" type="button">🤖</button>`;
+    + `<button class="speak-btn" data-speak="${t}" data-src="ai" title="AI 語音（會記住）" type="button">🤖</button>`;
 }
 // 中文：瀏覽器中文語音 + AI
 function spkZh(text) {
   if (!text) return '';
   const t = esc(text);
   return `<button class="speak-btn" data-speak="${t}" data-src="zh" title="中文發音（瀏覽器）" type="button">🔊中</button>`
-    + `<button class="speak-btn" data-speak="${t}" data-src="ai" title="中文 AI 語音" type="button">🤖</button>`;
+    + `<button class="speak-btn" data-speak="${t}" data-src="ai" title="中文 AI 語音（會記住）" type="button">🤖</button>`;
 }
 
 // 依序朗讀多段（瀏覽器語音會自動排隊）
@@ -632,7 +720,7 @@ function init() {
     switch (b.dataset.src) {
       case 'us': speakWordAccent(t, 'us'); break;
       case 'uk': speakWordAccent(t, 'uk'); break;
-      case 'ai': speakGeminiTTS(t); break;
+      case 'ai': speakGeminiTTS(t, b); break;
       case 'dict': speakWord(t); break;
       case 'zh': speak(t, ZH_LANG); break;
       default: speak(t);
@@ -2429,6 +2517,11 @@ function openCardDetail(id) {
   const c = cards.find(x => x.id === id);
   if (!c) return;
   modalCardId = id;
+  // 讓彈窗內按 AI 語音能對應到這張卡並寫入 ttsUrls
+  currentEntry = {
+    data: c.data, container: $('#modalBody'), word: c.data.word,
+    raw: c.raw || '', card: c,
+  };
   setModalReadonly(c);
   const modal = $('#cardModal');
   modal.hidden = false;
