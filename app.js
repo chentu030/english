@@ -3078,24 +3078,41 @@ function readerFullText(book) {
   return book.pages.map((t, i) => `[P${i + 1}] ${t}`).join('\n');
 }
 function escapeRegExp(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+/** 依目錄頁碼，取出該篇大致涵蓋的 PDF 原文視窗（給 Gemini 排版用） */
 function readerArticleWindow(book, toc) {
   // 使用者自行貼上的文章：直接用原文（保留段落）
   if (toc && toc.customBody) return toc.customBody;
   const full = readerFullText(book);
   if (!full) return '';
   if (book.kind === 'text') return full.replace(/\[P\d+\]\s*/g, '');
-  // 自動分頁的後備項目：直接取該頁及前後一頁的文字
-  if (toc.byPage && book.pages && toc.page) {
-    const p = toc.page - 1;
-    return book.pages.slice(Math.max(0, p), Math.min(book.pages.length, p + 2)).join('\n\n');
+
+  const pages = book.pages || [];
+  const pageNum = Number(toc && toc.page) || 0;
+
+  // 有頁碼：取本篇起始頁到下一篇起始頁（再多留 1 頁緩衝）
+  if (pageNum > 0 && pages.length) {
+    const start = Math.max(0, pageNum - 1);
+    let end = pages.length;
+    const siblings = (book.toc || [])
+      .map(t => Number(t.page) || 0)
+      .filter(p => p > pageNum)
+      .sort((a, b) => a - b);
+    if (siblings.length) end = Math.min(pages.length, siblings[0]); // 下一篇頁碼前（不含）
+    else end = Math.min(pages.length, start + 6); // 無下一篇時最多取 6 頁
+    // byPage 或單頁項目：至少含本頁＋下一頁
+    if (toc.byPage) end = Math.min(pages.length, Math.max(end, start + 2));
+    const slice = pages.slice(start, Math.max(start + 1, end));
+    return slice.map((t, i) => `[P${start + i + 1}] ${t}`).join('\n\n');
   }
+
   const words = (toc.title || '').toLowerCase().split(/\s+/).filter(Boolean).slice(0, 8).map(escapeRegExp);
   let idx = -1;
   if (words.length) {
     try { const re = new RegExp(words.join('\\W+'), 'i'); const m = re.exec(full); if (m) idx = m.index; } catch {}
   }
-  if (idx < 0) return full.slice(0, 14000);
-  return full.slice(Math.max(0, idx - 200), idx + 11000);
+  if (idx < 0) return full.slice(0, 18000);
+  return full.slice(Math.max(0, idx - 200), idx + 14000);
 }
 
 function chunkByWords(text, maxWords) {
@@ -3104,31 +3121,71 @@ function chunkByWords(text, maxWords) {
   for (const p of paras) {
     const w = p.split(/\s+/).length;
     if (curW + w > maxWords && cur) { chunks.push(cur); cur = ''; curW = 0; }
-    cur += (cur ? '\n' : '') + p; curW += w;
+    cur += (cur ? '\n\n' : '') + p; curW += w;
   }
   if (cur) chunks.push(cur);
   return chunks.length ? chunks : [text];
 }
 
+/** PDF 原文必須先經 Gemini 排版；失敗則拋錯，絕不直接沿用 PDF 生文字 */
+async function formatPdfArticleBody(raw, title) {
+  const schema = {
+    type: 'object',
+    properties: {
+      title: { type: 'string' },
+      article: { type: 'string' },
+    },
+    required: ['article'],
+  };
+  const prompt = `你是雜誌／刊物的文字排版編輯。以下文字擷取自 PDF，常有硬斷行、斷字、雙欄錯亂、頁碼標記 [P#]、頁眉頁腳、圖說、廣告或其他文章殘片。
+
+請找出標題約為「${title}」的「那一篇」完整正文，並重新排版成可閱讀的純文字：
+- 修復被 PDF 硬斷的單字與句子（含行末連字號斷字，例如 inter-\\nnational → international）。
+- 依語意還原自然段落；段落之間用空行（\\n\\n）分隔。
+- 若有小標／小節標題，請單獨成行保留。
+- 移除頁碼標記、頁眉頁腳、圖說、廣告、目錄殘片、以及其他不屬於本篇的內容。
+- 保留原文用字與語序：不要翻譯、不要改寫、不要摘要、不要加入任何說明或註解。
+- article 欄位只放排版後的正文（可含文章標題作為首行）。
+
+只輸出 JSON。
+
+原始文字：
+${String(raw || '').slice(0, 28000)}`;
+
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const out = await readerJSON(prompt, schema, 0.2, 16384);
+      const article = String(out.article || '').trim();
+      if (article.length >= 80) return article;
+      lastErr = new Error('排版結果過短');
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('PDF 正文排版失敗');
+}
+
 async function processArticle(book, toc) {
   const art = $('#readerArticle');
   const status = (t) => { art.innerHTML = `<div class="rd-processing"><span class="spinner"></span> ${esc(t)}</div>`; };
-  status('擷取文章正文中…');
+  status('擷取文章原文中…');
   const win = readerArticleWindow(book, toc);
   if (!win) {
     art.innerHTML = '<div class="empty-state small"><p class="empty-sub">這本書的原始內容不在此裝置（雲端不保存 PDF 原文）。請重新上傳同一份 PDF 即可處理未整理的文章。</p></div>';
     return;
   }
 
-  // 1) 用 AI 清出乾淨正文（貼上／自行新增的文字已乾淨，直接沿用，保留使用者段落）
+  // 1) PDF：必須先經 Gemini 排版（不可直接用 PDF 生文字）；貼上／自行新增則沿用原文
   let body = win;
   if (book.kind === 'pdf' && !(toc && toc.customBody)) {
+    status('Gemini 重新排版正文中…');
     try {
-      const cleanSchema = { type: 'object', properties: { article: { type: 'string' } }, required: ['article'] };
-      const cleanPrompt = `以下文字擷取自 PDF，可能夾雜頁碼標記[P#]、頁首頁尾、廣告或其他文章。請找出標題約為「${toc.title}」的那篇文章，輸出它的完整正文：\n- 合併被硬斷的行、還原自然段落（段落之間用換行分隔）。\n- 移除頁碼標記、頁首頁尾、圖說、廣告與其他文章。\n- 不要翻譯、不要加入任何說明，只輸出正文文字。\n\n文字：\n${win}`;
-      const cj = await readerJSON(cleanPrompt, cleanSchema, 0.2);
-      if (cj.article && cj.article.trim().length > 40) body = cj.article.trim();
-    } catch (e) { console.error('正文清理失敗，改用原始擷取', e); }
+      body = await formatPdfArticleBody(win, toc.title || '');
+    } catch (e) {
+      console.error('PDF 正文排版失敗', e);
+      art.innerHTML = `<div class="empty-state small"><p class="empty-sub">無法排版此篇 PDF 正文：${esc(e.message || '未知錯誤')}。請稍後按「重新整理」再試，或改用貼上文字。</p></div>`;
+      toast('PDF 排版失敗，未使用原始擷取文字', true);
+      return;
+    }
   }
 
   // 2) 逐段中英對照（分塊翻譯）＋ 3) 重要單字/片語/句型 ＋ 4) 大意，平行處理
@@ -3140,7 +3197,7 @@ async function processArticle(book, toc) {
     }, required: ['paragraphs'],
   };
   const transTasks = chunks.map(ch => readerJSON(
-    `把以下英文文章片段分成自然段落，輸出每一段的原文(en)與對應的繁體中文翻譯(zh)。保持順序、勿省略、勿加入說明。\n\n${ch}`,
+    `以下是已排版好的英文文章片段。請依現有段落（空行分隔）輸出每一段的原文(en)與對應的繁體中文翻譯(zh)。保持順序與段落結構、勿省略、勿合併無關段落、勿加入說明。\n\n${ch}`,
     transSchema, 0.3,
   ).then(r => r.paragraphs || []).catch(() => [{ en: ch, zh: '（此段翻譯失敗）' }]));
 
