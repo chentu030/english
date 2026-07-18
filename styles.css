@@ -987,15 +987,28 @@ body:has(#view-reader.active #readerBook:not([hidden])) .container {
 .rd-aside .def-item:last-child { border-bottom: 0; }
 .rd-collapse-head .btn.small { padding: 2px 8px; font-size: 11px; }
 .rd-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
-/* 文章正文（左）＋重點區（右）並排；各自獨立捲動 */
+/* 文章正文（左）＋重點區（右）並排；中間可拖曳調整寬度 */
 .rd-body-split {
-  display: grid; grid-template-columns: 1fr minmax(280px, 34%); gap: 14px;
+  display: grid;
+  grid-template-columns: 1fr 8px var(--reader-side-w, 34%);
+  gap: 0;
   align-items: stretch; flex: 1; min-height: 0; overflow: hidden;
 }
-.rd-main { min-width: 0; min-height: 0; height: 100%; overflow-y: auto; padding-right: 4px; }
+.rd-main { min-width: 0; min-height: 0; height: 100%; overflow-y: auto; padding-right: 8px; }
+.rd-resizer {
+  align-self: stretch; cursor: col-resize; position: relative; touch-action: none;
+  z-index: 2;
+}
+.rd-resizer::before {
+  content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px;
+  transform: translateX(-50%); background: var(--border); border-radius: 2px;
+}
+.rd-resizer:hover::before, .rd-resizer.dragging::before {
+  background: var(--primary); width: 4px;
+}
 .rd-aside {
   position: static; max-height: none;
-  min-height: 0; height: 100%; overflow-y: auto;
+  min-width: 0; min-height: 0; height: 100%; overflow-y: auto;
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 12px 14px;
 }
@@ -1030,6 +1043,7 @@ body:has(#view-reader.active #readerBook:not([hidden])) .container {
 
 @media (max-width: 1080px) {
   .rd-body-split { grid-template-columns: 1fr; }
+  .rd-resizer { display: none; }
   .rd-aside { position: static; max-height: none; height: auto; }
   .rd-main { height: auto; max-height: 50vh; }
 }
@@ -1248,6 +1262,7 @@ html.hide-zh .ls-zh { display: none !important; }
   .reader-split { height: auto; overflow: visible; }
   .reader-article { height: auto; overflow: visible; display: block; }
   .rd-body-split { height: auto; overflow: visible; }
+  .rd-resizer { display: none; }
   .rd-main { max-height: none; height: auto; }
   .rd-aside { height: auto; }
 }

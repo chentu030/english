@@ -4112,6 +4112,7 @@ function renderArticle(book, a) {
           ${paras}
         </div>
       </div>
+      <div class="rd-resizer" title="拖曳調整左右寬度"></div>
       <aside class="rd-aside">
         <div class="rd-summary">
           <div class="rd-sec-title">📌 大意 ${a.summary ? spkZh(a.summary) : ''} ${regen('summary')}</div>
@@ -4362,7 +4363,46 @@ async function visionTranscribe(file) {
   );
 }
 
+// 閱讀頁：正文／右側重點可拖曳調整寬度（記憶在 localStorage）
+function bindReaderResizer() {
+  const saved = localStorage.getItem('reader_side_w');
+  if (saved) document.documentElement.style.setProperty('--reader-side-w', saved);
+  let dragging = false;
+  let activeRez = null;
+  const move = e => {
+    if (!dragging) return;
+    const split = document.querySelector('#readerArticle .rd-body-split');
+    if (!split) return;
+    const rect = split.getBoundingClientRect();
+    const min = 240, max = Math.max(min, rect.width * 0.55);
+    const w = Math.max(min, Math.min(max, rect.right - e.clientX));
+    document.documentElement.style.setProperty('--reader-side-w', w + 'px');
+  };
+  const up = () => {
+    if (!dragging) return;
+    dragging = false;
+    if (activeRez) activeRez.classList.remove('dragging');
+    activeRez = null;
+    document.body.style.userSelect = '';
+    const v = getComputedStyle(document.documentElement).getPropertyValue('--reader-side-w').trim();
+    if (v) localStorage.setItem('reader_side_w', v);
+  };
+  // 委派：renderArticle 會重建 DOM，不能只綁一次節點
+  document.addEventListener('pointerdown', e => {
+    const rez = e.target.closest('.rd-resizer');
+    if (!rez || !rez.closest('#readerArticle')) return;
+    dragging = true;
+    activeRez = rez;
+    rez.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+}
+
 function bindReader() {
+  bindReaderResizer();
   $('#readerPdfFile')?.addEventListener('change', e => {
     const f = e.target.files && e.target.files[0];
     if (f) readerAddPdf(f);
