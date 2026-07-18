@@ -3116,11 +3116,15 @@ function renderArticle(book, a) {
       </div>
     </div>
     ${a.summary ? `<div class="rd-summary"><div class="rd-sec-title">📌 段落大意 ${spkZh(a.summary)}</div><p>${esc(a.summary)}</p></div>` : ''}
-    <div class="rd-section"><div class="rd-sec-title">📖 逐段中英對照</div>${paras}</div>
-    <div class="rd-cols">
-      <div class="rd-section"><div class="rd-sec-title">🔑 重要單字</div>${vocabHtml}</div>
-      <div class="rd-section"><div class="rd-sec-title">🧩 重要片語</div>${phraseHtml}</div>
-      <div class="rd-section"><div class="rd-sec-title">🏗 重要句型</div>${patternHtml}</div>
+    <div class="rd-body-split">
+      <div class="rd-main">
+        <div class="rd-section"><div class="rd-sec-title">📖 逐段中英對照</div>${paras}</div>
+      </div>
+      <aside class="rd-aside">
+        <div class="rd-section"><div class="rd-sec-title">🔑 重要單字</div>${vocabHtml}</div>
+        <div class="rd-section"><div class="rd-sec-title">🧩 重要片語</div>${phraseHtml}</div>
+        <div class="rd-section"><div class="rd-sec-title">🏗 重要句型</div>${patternHtml}</div>
+      </aside>
     </div>`;
   el.scrollTop = 0;
 }

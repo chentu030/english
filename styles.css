@@ -821,6 +821,16 @@ body.modal-open { overflow: hidden; }
 .rd-known { background: rgba(255, 214, 10, .45); border-radius: 3px; padding: 0 2px; color: inherit; }
 [data-theme="dark"] .rd-known { background: rgba(255, 214, 10, .3); }
 .rd-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+/* 文章正文（左）＋重點區（右）並排，方便邊讀邊對照 */
+.rd-body-split { display: grid; grid-template-columns: 1fr 320px; gap: 20px; align-items: start; }
+.rd-main { min-width: 0; }
+.rd-aside {
+  position: sticky; top: 72px; max-height: calc(100vh - 96px); overflow-y: auto;
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 14px;
+}
+.rd-aside .rd-section { margin-bottom: 16px; }
+.rd-aside .rd-section:last-child { margin-bottom: 0; }
 .rd-vitem { padding: 8px 0; border-bottom: 1px solid var(--border); }
 .rd-vhead { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .rd-vword { font-size: 15px; }
@@ -830,6 +840,10 @@ body.modal-open { overflow: hidden; }
 .rd-pitem { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
 .rd-para-spk { vertical-align: middle; }
 
+@media (max-width: 1080px) {
+  .rd-body-split { grid-template-columns: 1fr; }
+  .rd-aside { position: static; max-height: none; }
+}
 @media (max-width: 720px) {
   .reader-split { grid-template-columns: 1fr; }
   .reader-toc { position: static; max-height: 240px; }
