@@ -851,8 +851,14 @@ body.modal-open { overflow: hidden; }
 }
 
 /* ===================== 聽力 ===================== */
-.listen-split { display: grid; grid-template-columns: 1fr 330px; gap: 16px; align-items: start; }
+.listen-split { display: grid; grid-template-columns: 1fr 8px var(--listen-side-w, 34%); gap: 12px; align-items: start; }
 .listen-left { min-width: 0; }
+.listen-resizer { align-self: stretch; cursor: col-resize; position: relative; touch-action: none; }
+.listen-resizer::before {
+  content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px;
+  transform: translateX(-50%); background: var(--border); border-radius: 2px;
+}
+.listen-resizer:hover::before, .listen-resizer.dragging::before { background: var(--primary); width: 4px; }
 .listen-player {
   background: #000; border-radius: var(--radius); overflow: hidden; margin-bottom: 12px;
   aspect-ratio: 16 / 9; display: flex; align-items: center; justify-content: center;
@@ -882,6 +888,7 @@ body.modal-open { overflow: hidden; }
 
 @media (max-width: 860px) {
   .listen-split { grid-template-columns: 1fr; }
+  .listen-resizer { display: none; }
   .listen-side { position: static; max-height: none; }
   .listen-transcript { max-height: 40vh; }
 }

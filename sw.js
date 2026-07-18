@@ -1,6 +1,6 @@
 // 簡易 Service Worker：讓網站可安裝為 App，並提供離線基本快取。
 // 更新版本號可強制更新快取。
-const CACHE = 'beidanzi-v10';
+const CACHE = 'beidanzi-v11';
 const ASSETS = [
   './',
   './index.html',

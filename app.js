@@ -3854,6 +3854,33 @@ function listenSetActiveByTime(t) {
   }
 }
 
+// 右側欄可拖曳調整寬度（記憶在 localStorage）
+function bindListenResizer() {
+  const rez = $('#listenResizer');
+  const split = rez && rez.closest('.listen-split');
+  if (!rez || !split) return;
+  const saved = localStorage.getItem('listen_side_w');
+  if (saved) document.documentElement.style.setProperty('--listen-side-w', saved);
+  let dragging = false;
+  const move = e => {
+    if (!dragging) return;
+    const rect = split.getBoundingClientRect();
+    const x = e.clientX;
+    const min = 280, max = Math.max(min, rect.width * 0.6);
+    const w = Math.max(min, Math.min(max, rect.right - x));
+    document.documentElement.style.setProperty('--listen-side-w', w + 'px');
+  };
+  const up = () => {
+    if (!dragging) return;
+    dragging = false; rez.classList.remove('dragging'); document.body.style.userSelect = '';
+    const v = getComputedStyle(document.documentElement).getPropertyValue('--listen-side-w').trim();
+    if (v) localStorage.setItem('listen_side_w', v);
+  };
+  rez.addEventListener('pointerdown', e => { dragging = true; rez.classList.add('dragging'); document.body.style.userSelect = 'none'; e.preventDefault(); });
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', up);
+}
+
 function listenSeekTo(sec) {
   if (ytPlayer && ytPlayer.seekTo) { ytPlayer.seekTo(sec, true); ytPlayer.playVideo && ytPlayer.playVideo(); }
   else if (listenMediaEl) { listenMediaEl.currentTime = sec; listenMediaEl.play && listenMediaEl.play(); }
@@ -3897,6 +3924,7 @@ function bindListen() {
     const it = listenItems.find(i => i.id === listenCurrentId);
     if (it) relistenTranslate(it);
   });
+  bindListenResizer();
   $('#listenSide')?.addEventListener('click', e => {
     if (e.target.closest('.speak-btn')) return;
     const regen = e.target.closest('.ls-regen');
