@@ -1021,10 +1021,38 @@ body:has(#view-reader.active #readerBook:not([hidden])) .container {
 .rd-vword { font-size: 15px; }
 .rd-vmean { color: var(--text-soft); font-size: 13px; margin-top: 2px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .rd-vex { font-size: 13px; margin-top: 3px; }
-.rd-vex.ls-jump, .rd-vex.rd-jump, .rd-pitem.rd-jump {
-  cursor: pointer; border-radius: 4px; padding: 2px 4px; margin-left: -4px;
+.rd-vitem.ls-jump, .rd-vitem.rd-jump,
+.rd-pitem.ls-jump, .rd-pitem.rd-jump,
+.example.ls-jump, .example.rd-jump,
+.rd-vex.ls-jump, .rd-vex.rd-jump {
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background .15s ease, box-shadow .15s ease;
 }
-.rd-vex.ls-jump:hover, .rd-vex.rd-jump:hover, .rd-pitem.rd-jump:hover { background: var(--primary-soft); }
+.rd-vitem.ls-jump:hover, .rd-vitem.rd-jump:hover,
+.rd-pitem.ls-jump:hover, .rd-pitem.rd-jump:hover {
+  background: var(--primary-soft);
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+.example.ls-jump:hover, .example.rd-jump:hover,
+.rd-vex.ls-jump:hover, .rd-vex.rd-jump:hover {
+  background: var(--primary-soft);
+}
+.rd-jump-hint {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--primary);
+  opacity: .75;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.rd-vitem.ls-jump:hover .rd-jump-hint,
+.rd-vitem.rd-jump:hover .rd-jump-hint,
+.rd-pitem.ls-jump:hover .rd-jump-hint,
+.rd-pitem.rd-jump:hover .rd-jump-hint {
+  opacity: 1;
+}
 .rd-vexzh { font-size: 12px; color: var(--text-mute); }
 .rd-pitem { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
 .rd-para-spk { vertical-align: middle; }

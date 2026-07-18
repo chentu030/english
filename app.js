@@ -4069,9 +4069,17 @@ function sideVocabHtml(vocab, { jumpable = false, editing = false } = {}) {
   };
   return list.map(v => {
     const jumpVal = mode === 'para' ? v.example_pi : v.example_start;
-    return `<div class="def-item rd-vitem" data-word="${esc((v.word || '').toLowerCase())}">
+    const canJump = !!(mode && jumpVal != null && jumpVal !== '');
+    const jumpCls = canJump ? (mode === 'para' ? ' rd-jump' : ' ls-jump') : '';
+    const jumpAttr = canJump
+      ? (mode === 'para'
+        ? ` data-pi="${jumpVal}" title="點擊跳到文章第 ${Number(jumpVal) + 1} 段"`
+        : ` data-start="${jumpVal}" title="點擊跳到影片／音檔 ${typeof fmtTime === 'function' ? fmtTime(jumpVal) : ''} 處"`)
+      : '';
+    const jumpBadge = canJump ? '<span class="rd-jump-hint" aria-hidden="true">↗ 跳轉</span>' : '';
+    return `<div class="def-item rd-vitem${jumpCls}" data-word="${esc((v.word || '').toLowerCase())}"${jumpAttr}>
       <div class="rd-vhead">
-        <b class="rd-vword">${esc(v.word)}</b>${spkw(v.word)}
+        <b class="rd-vword">${esc(v.word)}</b>${spkw(v.word)}${jumpBadge}
         <button class="btn ghost small rd-add-vocab" data-word="${esc(v.word)}" data-ex="${esc(v.example_en || '')}">＋ 加入詞庫</button>
       </div>
       ${(v.pos || v.meaning_zh) ? `<div class="rd-vmean">${v.pos ? `<span class="def-pos">${esc(v.pos)}</span>` : ''}${v.meaning_zh ? `<span class="def-zh">${esc(v.meaning_zh)}</span>${spkZh(v.meaning_zh)}` : ''}</div>` : ''}
@@ -4096,8 +4104,9 @@ function sidePhrasesHtml(phrases, { jumpable = false, editing = false, field = '
         ? ` data-pi="${jumpVal}" title="點擊跳到對應段落"`
         : ` data-start="${jumpVal}" title="點擊跳到影片／音檔對應處"`)
       : '';
+    const jumpBadge = canJump ? '<span class="rd-jump-hint" aria-hidden="true">↗ 跳轉</span>' : '';
     return `<div class="def-item rd-pitem${jumpCls}" data-phrase="${esc(key.toLowerCase())}"${jumpAttr}>
-      <div class="rd-vhead"><b>${esc(key)}</b> <button class="speak-btn" data-speak="${esc(key)}" data-src="browser" type="button">🔊</button></div>
+      <div class="rd-vhead"><b>${esc(key)}</b>${jumpBadge} <button class="speak-btn" data-speak="${esc(key)}" data-src="browser" type="button">🔊</button></div>
       ${mean ? `<div class="rd-vmean">${esc(mean)}</div>` : ''}
       ${p.example_en ? `<div class="example${jumpCls}"${jumpAttr}>${esc(p.example_en)} <button class="speak-btn" data-speak="${esc(p.example_en)}" data-src="browser" type="button">🔊</button></div>` : ''}
     </div>`;
@@ -4887,13 +4896,13 @@ function bindReader() {
       renderArticle(book, a);
       return;
     }
+    const add = e.target.closest('.rd-add-vocab');
+    if (add) { openReaderAdd(add.dataset.word, add.dataset.ex); return; }
     const jump = e.target.closest('.rd-jump');
     if (jump && jump.dataset.pi != null) {
       readerSeekToPara(jump.dataset.pi);
       return;
     }
-    const add = e.target.closest('.rd-add-vocab');
-    if (add) { openReaderAdd(add.dataset.word, add.dataset.ex); return; }
     if (e.target.closest('#rdToggleZh')) { toggleHideZh(); return; }
     if (e.target.closest('#rdReadAll')) {
       const book = readerBooks.find(b => b.id === readerCurrentBookId);
@@ -6348,11 +6357,6 @@ function bindListen() {
   bindListenResizer();
   $('#listenSide')?.addEventListener('click', e => {
     if (e.target.closest('.speak-btn')) return;
-    const jump = e.target.closest('.ls-jump');
-    if (jump && jump.dataset.start != null) {
-      listenSeekTo(parseFloat(jump.dataset.start) || 0);
-      return;
-    }
     const regen = e.target.closest('.ls-regen');
     if (regen) { const it = listenItems.find(i => i.id === listenCurrentId); if (it) relistenAnalyze(it, regen.dataset.lspart); return; }
     const editToggle = e.target.closest('.side-edit-toggle');
@@ -6385,6 +6389,8 @@ function bindListen() {
       renderListenItem(it);
       return;
     }
+    const add = e.target.closest('.rd-add-vocab');
+    if (add) { openReaderAdd(add.dataset.word, add.dataset.ex); return; }
     const head = e.target.closest('.rd-collapse-head');
     if (head && !e.target.closest('button')) {
       const box = head.closest('.rd-collapse');
@@ -6394,8 +6400,12 @@ function bindListen() {
       }
       return;
     }
-    const add = e.target.closest('.rd-add-vocab');
-    if (add) openReaderAdd(add.dataset.word, add.dataset.ex);
+    // 可跳轉項目：避免點到按鈕時誤跳
+    if (e.target.closest('button')) return;
+    const jump = e.target.closest('.ls-jump');
+    if (jump && jump.dataset.start != null) {
+      listenSeekTo(parseFloat(jump.dataset.start) || 0);
+    }
   });
   $('#listenSide')?.addEventListener('input', e => {
     const t = e.target.closest('.side-ed-input');
