@@ -6761,7 +6761,7 @@ function bindListen() {
   });
 }
 
-/* ---------------------- 框選文字 → AI 提問小框 ---------------------- */
+/* ---------------------- 全局 AI 助手（右側欄／底部抽屜） ---------------------- */
 const SEL_AI_PROMPTS = {
   比較: (t) => `請簡短比較「${t}」與易混淆的相近用法（如近義詞／相近句型），點出差異與何時用哪個。用繁體中文，2–5 句。`,
   解釋: (t) => `請簡短解釋「${t}」在此文中的意思與用法。用繁體中文，2–5 句。`,
@@ -6772,45 +6772,28 @@ const SEL_AI_PROMPTS = {
 let selAiState = { text: '', context: '' };
 let selAiBusy = false;
 
-function hideSelAiPop() {
-  const pop = $('#selAiPop');
-  if (pop) {
-    pop.hidden = true;
-    pop.classList.remove('dragging');
-  }
+function isSelAiOpen() {
+  const panel = $('#selAiPanel');
+  return !!(panel && !panel.hidden);
 }
 
-function clampSelAiPos(left, top, pop) {
-  const pad = 8;
-  const el = pop || $('#selAiPop');
-  const w = el?.offsetWidth || 300;
-  const h = el?.offsetHeight || 160;
-  left = Math.max(pad, Math.min(left, window.innerWidth - w - pad));
-  top = Math.max(pad, Math.min(top, window.innerHeight - h - pad));
-  return { left: Math.round(left), top: Math.round(top) };
-}
-
-function showSelAiPop(text, context, rect) {
-  const pop = $('#selAiPop');
-  if (!pop || !text) return;
-  selAiState = { text, context: context || '' };
-  const quote = $('#selAiQuote');
-  const ans = $('#selAiAns');
-  const input = $('#selAiInput');
-  if (quote) quote.textContent = text.length > 80 ? text.slice(0, 80) + '…' : text;
-  if (ans) { ans.hidden = true; ans.textContent = ''; }
-  if (input) input.value = '';
-  pop.hidden = false;
-  const w = pop.offsetWidth || 300;
-  let left = rect.left + rect.width / 2 - w / 2;
-  let top = rect.bottom + 8;
-  ({ left, top } = clampSelAiPos(left, top, pop));
-  // 若下方空間不足，改放到選取區上方
-  if (top < rect.bottom && rect.top - (pop.offsetHeight || 160) - 8 > 8) {
-    ({ left, top } = clampSelAiPos(left, rect.top - (pop.offsetHeight || 160) - 8, pop));
+function setSelAiOpen(open) {
+  const panel = $('#selAiPanel');
+  const fab = $('#selAiFab');
+  if (!panel) return;
+  panel.hidden = !open;
+  document.body.classList.toggle('sel-ai-open', !!open);
+  if (fab) {
+    fab.classList.toggle('is-open', !!open);
+    fab.setAttribute('aria-expanded', open ? 'true' : 'false');
+    fab.title = open ? '收合 AI 助手' : 'AI 助手';
+    fab.setAttribute('aria-label', open ? '收合 AI 助手' : '開啟 AI 助手');
   }
-  pop.style.left = `${left}px`;
-  pop.style.top = `${top}px`;
+  if (open) {
+    // 開啟時若有選取，自動帶入一次
+    grabSelAiSelection({ silent: true });
+    setTimeout(() => $('#selAiTopic')?.focus(), 40);
+  }
 }
 
 function selectionInRoots() {
@@ -6823,27 +6806,16 @@ function selectionInRoots() {
   const el = node.nodeType === 1 ? node : node.parentElement;
   if (!el) return null;
 
-  // 不要在按鈕、表單、導航、登入門、小框本身觸發
-  if (el.closest('button, a, input, textarea, select, label, .sel-ai-pop, .nav, .topbar, .login-gate, .toast, .modal-header, .modal-actions, .rate-btns, .study-toolbar')) {
+  if (el.closest('button, a, input, textarea, select, label, .sel-ai-panel, .sel-ai-fab, .nav, .topbar, .login-gate, .toast, .modal-header, .modal-actions, .rate-btns, .study-toolbar')) {
     return null;
   }
-  // 設定頁（金鑰等）不彈
   if (el.closest('#view-settings')) return null;
 
-  // 主要學習內容：背誦字卡、詞庫、詳情、新增預覽、閱讀、聽力…
   const root = el.closest([
-    '#cardFront',
-    '#cardBack',
-    '#studyCard',
-    '#studyEditor',
-    '#modalBody',
-    '#deckList',
-    '#previewArea',
-    '#readerArticle .rd-main',
-    '#readerArticle .rd-aside',
-    '#listenTranscript',
-    '#listenSide',
-    '.word-card',
+    '#cardFront', '#cardBack', '#studyCard', '#studyEditor', '#modalBody',
+    '#deckList', '#previewArea',
+    '#readerArticle .rd-main', '#readerArticle .rd-aside',
+    '#listenTranscript', '#listenSide', '.word-card',
   ].join(', '));
   if (!root) return null;
 
@@ -6858,19 +6830,46 @@ function selectionInRoots() {
   return { text, context, range };
 }
 
+function anyPageSelection() {
+  const hit = selectionInRoots();
+  if (hit) return hit;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+  let text = String(sel.toString() || '').replace(/\s+/g, ' ').trim();
+  if (!text || text.length > 400) return null;
+  const node = sel.getRangeAt(0).commonAncestorContainer;
+  const el = node.nodeType === 1 ? node : node.parentElement;
+  if (!el || el.closest('.sel-ai-panel, .sel-ai-fab, input, textarea, .login-gate')) return null;
+  return { text, context: '', range: sel.getRangeAt(0) };
+}
+
+function grabSelAiSelection({ silent = false } = {}) {
+  const hit = anyPageSelection();
+  const topic = $('#selAiTopic');
+  if (!hit) {
+    if (!silent) toast('請先框選一段文字', true);
+    return false;
+  }
+  selAiState = { text: hit.text, context: hit.context || '' };
+  if (topic) topic.value = hit.text;
+  if (!silent) toast('已帶入選取文字');
+  return true;
+}
+
 async function askSelAi(question) {
-  const pop = $('#selAiPop');
   const ans = $('#selAiAns');
-  if (!pop || !ans || selAiBusy) return;
-  const { text, context } = selAiState;
-  if (!text) return;
+  if (!ans || selAiBusy) return;
+  const topic = String($('#selAiTopic')?.value || selAiState.text || '').trim();
   const q = String(question || '').trim();
   if (!q) { toast('請先輸入問題或點快捷', true); return; }
+  if (!topic) { toast('請先填主題字詞，或按「帶入選取」', true); return; }
+  selAiState.text = topic;
+  if (!isSelAiOpen()) setSelAiOpen(true);
   selAiBusy = true;
   ans.hidden = false;
   ans.innerHTML = '<span class="spinner"></span> 思考中…';
   try {
-    const prompt = `你是英語家教，回答要精簡實用。\n使用者圈選：「${text}」\n上下文：${context || '（無）'}\n任務：${q}\n用繁體中文回答；英文例句可保留英文。不要開場白、不要列一堆無關選項。`;
+    const prompt = `你是英語家教，回答要精簡實用。\n使用者圈選／主題：「${topic}」\n上下文：${selAiState.context || '（無）'}\n任務：${q}\n用繁體中文回答；英文例句可保留英文。不要開場白、不要列一堆無關選項。`;
     const reply = await geminiGenerate([{ text: prompt }], {
       temperature: 0.4,
       maxOutputTokens: 640,
@@ -6885,49 +6884,45 @@ async function askSelAi(question) {
 }
 
 function bindSelAiPop() {
-  const pop = $('#selAiPop');
-  if (!pop) return;
+  const panel = $('#selAiPanel');
+  const fab = $('#selAiFab');
+  if (!panel || !fab) return;
 
-  // 在小框上 mousedown 避免清掉選取／立刻關閉
-  pop.addEventListener('mousedown', e => {
-    // 允許在輸入框正常點選／輸入
-    if (e.target.closest('input, textarea, select, button')) return;
-    e.preventDefault();
-  });
+  fab.addEventListener('click', () => setSelAiOpen(!isSelAiOpen()));
 
-  // 有新的框選才打開／更新小框；點外面、捲動、Esc 都不關，只靠 ✕
-  const onSelEnd = (e) => {
-    if (e.target && e.target.closest && e.target.closest('#selAiPop')) return;
-    setTimeout(() => {
-      const hit = selectionInRoots();
-      if (!hit) return;
-      const rect = hit.range.getBoundingClientRect();
-      if (rect.width || rect.height) showSelAiPop(hit.text, hit.context, rect);
-    }, 10);
-  };
-  document.addEventListener('mouseup', onSelEnd);
-  document.addEventListener('touchend', onSelEnd, { passive: true });
-
-  pop.addEventListener('click', e => {
+  panel.addEventListener('click', e => {
     const chip = e.target.closest('[data-sel-chip]');
     if (chip) {
       const kind = chip.dataset.selChip;
+      const topic = String($('#selAiTopic')?.value || selAiState.text || '').trim();
+      if (!topic) { toast('請先填主題字詞，或按「帶入選取」', true); return; }
       const mk = SEL_AI_PROMPTS[kind];
-      askSelAi(mk ? mk(selAiState.text) : kind);
+      askSelAi(mk ? mk(topic) : kind);
       return;
     }
     if (e.target.closest('#selAiAsk')) {
       askSelAi($('#selAiInput')?.value || '');
       return;
     }
+    if (e.target.closest('#selAiGrabSel')) {
+      grabSelAiSelection();
+      return;
+    }
     if (e.target.closest('#selAiClose')) {
-      hideSelAiPop();
+      setSelAiOpen(false);
     }
   });
+
   $('#selAiInput')?.addEventListener('keydown', e => {
     if (e.key === 'Enter' && !e.isComposing) {
       e.preventDefault();
       askSelAi($('#selAiInput')?.value || '');
+    }
+  });
+  $('#selAiTopic')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.isComposing) {
+      e.preventDefault();
+      $('#selAiInput')?.focus();
     }
   });
 }

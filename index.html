@@ -515,11 +515,17 @@
     </div>
   </div>
 
-  <div id="selAiPop" class="sel-ai-pop" hidden>
-    <div class="sel-ai-head" id="selAiDrag" title="拖曳移動">
-      <span class="sel-ai-drag" aria-hidden="true">⋮⋮</span>
-      <div class="sel-ai-quote" id="selAiQuote"></div>
-      <button type="button" class="sel-ai-close" id="selAiClose" title="關閉">✕</button>
+  <!-- 全局 AI 助手：電腦右側欄／手機底部抽屜；用低調小鈕開關 -->
+  <button type="button" id="selAiFab" class="sel-ai-fab" title="AI 助手" aria-label="開啟 AI 助手" aria-expanded="false">✨</button>
+  <aside id="selAiPanel" class="sel-ai-panel" hidden>
+    <div class="sel-ai-panel-head">
+      <span class="sel-ai-panel-title">AI 助手</span>
+      <button type="button" class="sel-ai-close" id="selAiClose" title="收合">✕</button>
+    </div>
+    <p class="sel-ai-hint">可先框選文字再按「帶入選取」，或直接輸入要問的字詞。</p>
+    <div class="sel-ai-topic-row">
+      <input id="selAiTopic" type="text" placeholder="主題字詞／句子…" autocomplete="off" />
+      <button type="button" class="btn ghost small" id="selAiGrabSel" title="帶入目前選取的文字">帶入選取</button>
     </div>
     <div class="sel-ai-chips">
       <button type="button" data-sel-chip="比較">比較</button>
@@ -533,7 +539,7 @@
       <button type="button" class="btn primary small" id="selAiAsk">問</button>
     </div>
     <div class="sel-ai-ans" id="selAiAns" hidden></div>
-  </div>
+  </aside>
 
   <div id="toast" class="toast" hidden></div>
 
