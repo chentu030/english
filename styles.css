@@ -1518,15 +1518,22 @@ html.hide-zh .ls-zh { display: none !important; }
   display: flex;
   gap: 6px;
   align-items: center;
+  flex-wrap: wrap;
 }
 .sel-ai-topic-row input {
-  flex: 1; min-width: 0;
+  flex: 1 1 140px; min-width: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 7px 10px;
   font-size: 13px;
   background: var(--bg);
   color: var(--text);
+}
+.sel-ai-topic-row .btn.small {
+  flex-shrink: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  white-space: nowrap;
 }
 .sel-ai-topic-row input::placeholder { color: var(--text-mute); }
 .sel-ai-chips {

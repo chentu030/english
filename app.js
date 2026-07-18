@@ -6908,6 +6908,12 @@ function bindSelAiPop() {
       grabSelAiSelection();
       return;
     }
+    if (e.target.closest('#selAiAddDeck')) {
+      const word = String($('#selAiTopic')?.value || selAiState.text || '').trim();
+      if (!word) { toast('請先填主題字詞，或按「帶入選取」', true); return; }
+      openReaderAdd(word.slice(0, 80), selAiState.context || '');
+      return;
+    }
     if (e.target.closest('#selAiClose')) {
       setSelAiOpen(false);
     }
