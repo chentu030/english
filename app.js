@@ -6226,12 +6226,34 @@ function renderListenPlayer(item) {
   const box = $('#listenPlayer');
   if (item.kind === 'youtube' && item.videoId) {
     box.classList.remove('audio-only');
-    box.innerHTML = '<div id="ytFrame"></div>';
+    // 隱藏 YouTube 原生上下控制列（消失很慢），改用我們自己的 hover 控制條（移開立刻消失）
+    box.innerHTML = `
+      <div id="ytFrame"></div>
+      <div class="yt-chrome" id="ytChrome">
+        <button type="button" class="yt-chrome-btn" id="ytChromePlay" title="播放／暫停">▶</button>
+        <input type="range" class="yt-chrome-seek" id="ytChromeSeek" min="0" max="1" value="0" step="0.1" />
+        <span class="yt-chrome-time" id="ytChromeTime">0:00 / 0:00</span>
+        <button type="button" class="yt-chrome-btn" id="ytChromeFs" title="全螢幕">⛶</button>
+      </div>`;
     ensureYT(() => {
       ytPlayer = new YT.Player('ytFrame', {
         videoId: item.videoId,
-        playerVars: { rel: 0, modestbranding: 1 },
-        events: { onReady: () => listenStartPolling(() => (ytPlayer && ytPlayer.getCurrentTime) ? ytPlayer.getCurrentTime() : null) },
+        playerVars: {
+          rel: 0,
+          modestbranding: 1,
+          controls: 0,
+          iv_load_policy: 3,
+          fs: 0,
+          playsinline: 1,
+          disablekb: 0,
+        },
+        events: {
+          onReady: () => {
+            listenStartPolling(() => (ytPlayer && ytPlayer.getCurrentTime) ? ytPlayer.getCurrentTime() : null);
+            updateYtChrome();
+          },
+          onStateChange: () => updateYtChrome(),
+        },
       });
     });
   } else if (item.kind === 'file' && item.mediaUrl) {
@@ -6251,6 +6273,48 @@ function renderListenPlayer(item) {
   }
 }
 
+function updateYtChrome() {
+  if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
+  let cur = 0, dur = 0, playing = false;
+  try {
+    cur = ytPlayer.getCurrentTime() || 0;
+    dur = ytPlayer.getDuration() || 0;
+    if (window.YT && ytPlayer.getPlayerState) {
+      playing = ytPlayer.getPlayerState() === YT.PlayerState.PLAYING;
+    }
+  } catch { return; }
+  const timeEl = $('#ytChromeTime');
+  const seek = $('#ytChromeSeek');
+  const btn = $('#ytChromePlay');
+  if (timeEl) timeEl.textContent = `${fmtTime(cur)} / ${fmtTime(dur)}`;
+  if (seek && document.activeElement !== seek) {
+    seek.max = String(Math.max(dur, 1));
+    seek.value = String(cur);
+  }
+  if (btn) {
+    btn.textContent = playing ? '❚❚' : '▶';
+    btn.title = playing ? '暫停' : '播放';
+  }
+}
+
+function ytTogglePlay() {
+  if (!ytPlayer || !ytPlayer.getPlayerState) return;
+  try {
+    const st = ytPlayer.getPlayerState();
+    if (st === YT.PlayerState.PLAYING) ytPlayer.pauseVideo();
+    else ytPlayer.playVideo();
+  } catch {}
+}
+
+function ytToggleFullscreen() {
+  const box = $('#listenPlayer');
+  if (!box) return;
+  try {
+    if (document.fullscreenElement === box) document.exitFullscreen?.();
+    else box.requestFullscreen?.();
+  } catch {}
+}
+
 function ensureYT(cb) {
   if (window.YT && window.YT.Player) { cb(); return; }
   const t = setInterval(() => { if (window.YT && window.YT.Player) { clearInterval(t); cb(); } }, 200);
@@ -6259,7 +6323,11 @@ function ensureYT(cb) {
 
 function listenStartPolling(getTime) {
   listenStopPolling();
-  listenPollTimer = setInterval(() => { const t = getTime(); if (typeof t === 'number') listenSetActiveByTime(t); }, 400);
+  listenPollTimer = setInterval(() => {
+    const t = getTime();
+    if (typeof t === 'number') listenSetActiveByTime(t);
+    updateYtChrome();
+  }, 400);
 }
 function listenStopPolling() { if (listenPollTimer) { clearInterval(listenPollTimer); listenPollTimer = null; } }
 
@@ -6345,6 +6413,17 @@ function bindListen() {
     const files = e.target.files;
     e.target.value = '';
     if (files && files.length) enqueueListenFiles(files);
+  });
+  $('#listenPlayer')?.addEventListener('click', e => {
+    if (e.target.closest('#ytChromePlay')) { ytTogglePlay(); return; }
+    if (e.target.closest('#ytChromeFs')) { ytToggleFullscreen(); return; }
+  });
+  $('#listenPlayer')?.addEventListener('input', e => {
+    const seek = e.target.closest('#ytChromeSeek');
+    if (!seek || !ytPlayer || !ytPlayer.seekTo) return;
+    const t = parseFloat(seek.value) || 0;
+    ytPlayer.seekTo(t, true);
+    listenSetActiveByTime(t);
   });
   $('#listenYoutubeBtn')?.addEventListener('click', openListenYoutubeModal);
   $('#lytConfirm')?.addEventListener('click', confirmListenYoutubeModal);

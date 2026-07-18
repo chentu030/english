@@ -1153,6 +1153,7 @@ body:has(#view-listen.active #listenItem:not([hidden])) .container {
 }
 .listen-resizer:hover::before, .listen-resizer.dragging::before { background: var(--primary); width: 4px; }
 .listen-player {
+  position: relative;
   background: #000; border-radius: var(--radius); overflow: hidden; margin: 0 auto 8px;
   aspect-ratio: 16 / 9;
   width: min(100%, calc(min(36vh, 380px) * 16 / 9));
@@ -1166,6 +1167,42 @@ body:has(#view-listen.active #listenItem:not([hidden])) .container {
 }
 .listen-player video, .listen-player iframe { width: 100%; height: 100%; border: 0; display: block; }
 .listen-player audio { width: 100%; }
+/* 自訂 YouTube 控制條：僅 hover 顯示，移開立刻消失（取代原生慢消失上下列） */
+.yt-chrome {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+  display: flex; align-items: center; gap: 8px;
+  padding: 18px 10px 8px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, .78));
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .12s ease;
+}
+.listen-player:hover .yt-chrome,
+.listen-player:focus-within .yt-chrome {
+  opacity: 1;
+  pointer-events: auto;
+}
+.yt-chrome-btn {
+  flex-shrink: 0;
+  width: 32px; height: 28px;
+  border: 0; border-radius: 6px;
+  background: rgba(255, 255, 255, .12);
+  color: #fff; font-size: 12px; line-height: 1;
+  cursor: pointer;
+}
+.yt-chrome-btn:hover { background: rgba(255, 255, 255, .22); }
+.yt-chrome-seek {
+  flex: 1; min-width: 0;
+  accent-color: #ff4d4d;
+  height: 4px; cursor: pointer;
+}
+.yt-chrome-time {
+  flex-shrink: 0;
+  color: rgba(255, 255, 255, .9);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .listen-transcript-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   font-weight: 700; font-size: 13px; margin-bottom: 6px; flex-wrap: wrap; flex-shrink: 0;
