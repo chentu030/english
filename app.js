@@ -4127,25 +4127,49 @@ async function translateListen(item, showStage) {
 }
 
 async function analyzeListen(item, showStage) {
-  if (showStage) showStage('整理重要單字／片語／文法…');
   const text = (item.segments || []).map(s => s.en).join(' ').slice(0, 16000);
-  const schema = {
+  if (!text.trim()) return;
+
+  // 1) 大意 + 重要單字（單獨一輪，避免 JSON 過大導致整包失敗）
+  if (showStage) showStage('整理大意與重要單字…');
+  const vocabSchema = {
     type: 'object', properties: {
       summary: { type: 'string' },
       vocab: { type: 'array', items: { type: 'object', properties: { word: { type: 'string' }, meaning_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['word'] } },
+    },
+    required: ['vocab'],
+  };
+  try {
+    const out = await readerJSON(
+      `你是英語聽力精聽老師。以下是一段音檔／影片的逐字稿。用繁體中文整理：\n- summary：整體大意（3–5 句）。\n- vocab：10–15 個重要單字，附中文意思(meaning_zh)與一個原文例句(example_en，必須儘量直接取自逐字稿原句)。\n只輸出 JSON（不要生成片語或文法）。\n\n逐字稿：\n${text}`,
+      vocabSchema, 0.5,
+    );
+    item.summary = out.summary || item.summary || '';
+    item.vocab = out.vocab || [];
+    attachListenExampleStarts(item);
+    saveListenLocal();
+    if (listenCurrentId === item.id) renderListenItem(item);
+  } catch (e) { console.error('聽力單字／大意分析失敗', e); }
+
+  // 2) 重要片語 + 重要文法（再調用一次，與單字分開）
+  if (showStage) showStage('整理重要片語／文法…');
+  const pgSchema = {
+    type: 'object', properties: {
       phrases: { type: 'array', items: { type: 'object', properties: { phrase: { type: 'string' }, meaning_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['phrase'] } },
       grammar: { type: 'array', items: { type: 'object', properties: { point: { type: 'string' }, explain_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['point'] } },
     },
+    required: ['phrases', 'grammar'],
   };
-  const prompt = `你是英語聽力精聽老師。以下是一段音檔／影片的逐字稿。用繁體中文整理：\n- summary：整體大意（3–5 句）。\n- vocab：10–15 個重要單字，附中文意思(meaning_zh)與一個原文例句(example_en，必須儘量直接取自逐字稿原句)。\n- phrases：5–10 個重要片語／口語搭配，附中文(meaning_zh)與一個原文例句(example_en，必須儘量直接取自逐字稿原句)。\n- grammar：3–6 個重要文法／句型重點，說明用法(explain_zh)並附原文例句(example_en，必須儘量直接取自逐字稿原句)。\n只輸出 JSON。\n\n逐字稿：\n${text}`;
   try {
-    const out = await readerJSON(prompt, schema, 0.5);
-    item.summary = out.summary || '';
-    item.vocab = out.vocab || [];
+    const out = await readerJSON(
+      `你是英語聽力精聽老師。以下是一段音檔／影片的逐字稿。用繁體中文整理（不要重複生成單字列表）：\n- phrases：5–10 個重要片語／口語搭配，附中文(meaning_zh)與一個原文例句(example_en，必須儘量直接取自逐字稿原句)。\n- grammar：3–6 個重要文法／句型重點，說明用法(explain_zh)並附原文例句(example_en，必須儘量直接取自逐字稿原句)。\n只輸出 JSON。\n\n逐字稿：\n${text}`,
+      pgSchema, 0.5,
+    );
     item.phrases = out.phrases || [];
     item.grammar = out.grammar || [];
     attachListenExampleStarts(item);
-  } catch (e) { console.error('聽力分析失敗', e); }
+  } catch (e) { console.error('聽力片語／文法分析失敗', e); }
+
   saveListenLocal();
 }
 
