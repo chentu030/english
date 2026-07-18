@@ -2898,10 +2898,12 @@ function renderBook(book) {
       const flag = processed ? '✅' : (t.customBody ? '✍️' : (t.page ? 'p.' + t.page : ''));
       return `<button class="rd-toc-item${active}" data-toc="${t.id}">
         <span class="rd-toc-title">${esc(t.title)}</span>
+        ${t.title_zh ? `<span class="rd-toc-zh">${esc(t.title_zh)}</span>` : '<span class="rd-toc-zh muted">翻譯中…</span>'}
         ${t.section ? `<span class="rd-toc-sec">${esc(t.section)}</span>` : ''}
         <span class="rd-toc-flag">${flag}</span>
       </button>`;
     }).join('');
+    translateReaderTocTitles(book);
   }
   // 文章區
   const art = $('#readerArticle');
@@ -2909,6 +2911,36 @@ function renderBook(book) {
     renderArticle(book, book.articles[readerCurrentTocId]);
   } else if (!readerCurrentTocId) {
     art.innerHTML = '<div class="empty-state small"><p class="empty-sub">從左側目錄點一篇文章開始精讀。</p></div>';
+  }
+}
+
+let readerTocTranslateBusy = false;
+async function translateReaderTocTitles(book) {
+  if (!book || readerTocTranslateBusy) return;
+  const need = (book.toc || []).filter(t => t.title && !t.title_zh);
+  if (!need.length) return;
+  readerTocTranslateBusy = true;
+  try {
+    const translator = await createBrowserTranslator();
+    for (const t of need) {
+      try {
+        t.title_zh = translator
+          ? await browserTranslateOneNative(t.title, translator)
+          : await browserTranslateOneGtx(t.title);
+      } catch {
+        try { t.title_zh = await browserTranslateOneGtx(t.title); } catch { t.title_zh = ''; }
+      }
+      // 逐項更新 DOM，不必整本重繪
+      const btn = document.querySelector(`#readerToc [data-toc="${CSS.escape(t.id)}"] .rd-toc-zh`);
+      if (btn) {
+        btn.textContent = t.title_zh || '';
+        btn.classList.toggle('muted', !t.title_zh);
+      }
+    }
+    book.updatedAt = now();
+    saveReader();
+  } finally {
+    readerTocTranslateBusy = false;
   }
 }
 
@@ -3189,7 +3221,7 @@ async function processArticle(book, toc) {
     }
   }
 
-  // 2) 逐段中英對照（分塊翻譯）＋ 3) 重要單字/片語/句型 ＋ 4) 大意，平行處理
+  // 2) 逐段中英對照＋單字（含詞性）＋片語/句型（另一次 AI）＋大意
   status('AI 翻譯與精讀分析中…（重要單字、片語、句型、逐段對照、大意）');
   const chunks = chunkByWords(body, 850);
   const transSchema = {
@@ -3204,15 +3236,26 @@ async function processArticle(book, toc) {
 
   const vocabSchema = {
     type: 'object', properties: {
-      vocab: { type: 'array', items: { type: 'object', properties: { word: { type: 'string' }, meaning_zh: { type: 'string' }, example_en: { type: 'string' }, example_zh: { type: 'string' } }, required: ['word'] } },
-      phrases: { type: 'array', items: { type: 'object', properties: { phrase: { type: 'string' }, meaning_zh: { type: 'string' } }, required: ['phrase'] } },
-      patterns: { type: 'array', items: { type: 'object', properties: { pattern: { type: 'string' }, explain_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['pattern'] } },
+      vocab: { type: 'array', items: { type: 'object', properties: { word: { type: 'string' }, pos: { type: 'string' }, meaning_zh: { type: 'string' }, example_en: { type: 'string' }, example_zh: { type: 'string' } }, required: ['word'] } },
     },
+    required: ['vocab'],
   };
   const vocabTask = readerJSON(
-    `你是英語精讀老師。從以下文章挑出對進階學習者最有價值的內容，用繁體中文說明：\n- vocab：10–15 個重要單字，每個給中文意思(meaning_zh)、一個例句(example_en，優先取自文章)與例句中譯(example_zh)。\n- phrases：5–10 個重要片語／搭配，附中文(meaning_zh)。\n- patterns：3–6 個重要句型或文法結構，說明用法(explain_zh)並附一個例句(example_en)。\n只輸出 JSON。\n\n文章：\n${body.slice(0, 16000)}`,
+    `你是英語精讀老師。從以下文章挑出 10–15 個重要單字，用繁體中文說明。每個含：word、pos（詞性，如 n./v./adj.）、meaning_zh、example_en（優先取自文章）、example_zh。只輸出 JSON（不要生成片語或句型）。\n\n文章：\n${body.slice(0, 16000)}`,
     vocabSchema, 0.5,
-  ).catch(() => ({ vocab: [], phrases: [], patterns: [] }));
+  ).catch(() => ({ vocab: [] }));
+
+  const phrasesSchema = {
+    type: 'object', properties: {
+      phrases: { type: 'array', items: { type: 'object', properties: { phrase: { type: 'string' }, meaning_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['phrase'] } },
+      patterns: { type: 'array', items: { type: 'object', properties: { pattern: { type: 'string' }, explain_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['pattern'] } },
+    },
+    required: ['phrases', 'patterns'],
+  };
+  const phrasesTask = readerJSON(
+    `你是英語精讀老師。從以下文章挑出（不要重複生成單字列表）：\n- phrases：5–10 個重要片語／搭配，附 meaning_zh 與 example_en（優先取自文章）。\n- patterns：3–6 個重要句型／文法結構，附 explain_zh 與 example_en。\n只輸出 JSON。\n\n文章：\n${body.slice(0, 16000)}`,
+    phrasesSchema, 0.5,
+  ).catch(() => ({ phrases: [], patterns: [] }));
 
   const summarySchema = { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'] };
   const summaryTask = readerJSON(
@@ -3220,7 +3263,9 @@ async function processArticle(book, toc) {
     summarySchema, 0.4,
   ).then(r => r.summary || '').catch(() => '');
 
-  const [transArr, vocabOut, summary] = await Promise.all([Promise.all(transTasks), vocabTask, summaryTask]);
+  const [transArr, vocabOut, phrasesOut, summary] = await Promise.all([
+    Promise.all(transTasks), vocabTask, phrasesTask, summaryTask,
+  ]);
   const paragraphs = transArr.flat();
 
   status('整理心智圖大綱…');
@@ -3230,7 +3275,7 @@ async function processArticle(book, toc) {
   const article = {
     tocId: toc.id, title: toc.title, body,
     paragraphs, summary, mindmap,
-    vocab: vocabOut.vocab || [], phrases: vocabOut.phrases || [], patterns: vocabOut.patterns || [],
+    vocab: vocabOut.vocab || [], phrases: phrasesOut.phrases || [], patterns: phrasesOut.patterns || [],
     processedAt: now(),
   };
   attachReaderExamplePis(article);
@@ -3481,11 +3526,60 @@ function buildKnownWordRegex() {
   try { return new RegExp(`\\b(${words.map(escapeRegExp).join('|')})(s|es|ed|ing|d)?\\b`, 'gi'); }
   catch { return null; }
 }
+
+/** 文中標示：重要片語綠底線、重要單字綠底、詞庫單字黃底 */
+function highlightArticleEn(raw, { vocab = [], phrases = [], knownRe = null } = {}) {
+  const text = String(raw || '');
+  if (!text) return '';
+  const marks = [];
+  const addMarks = (list, type, getTerm) => {
+    for (const item of list || []) {
+      const term = String(getTerm(item) || '').trim();
+      if (term.length < 2) continue;
+      let re;
+      try {
+        if (type === 'phrase') {
+          re = new RegExp(escapeRegExp(term).replace(/\s+/g, '\\s+'), 'gi');
+        } else {
+          if (!/^[A-Za-z][A-Za-z'-]*$/.test(term)) continue;
+          re = new RegExp(`\\b${escapeRegExp(term)}(?:s|es|ed|ing|d)?\\b`, 'gi');
+        }
+      } catch { continue; }
+      let m;
+      while ((m = re.exec(text))) {
+        marks.push({ start: m.index, end: m.index + m[0].length, type, len: m[0].length });
+        if (m[0].length === 0) re.lastIndex++;
+      }
+    }
+  };
+  addMarks(phrases, 'phrase', x => x.phrase);
+  addMarks(vocab, 'vocab', x => x.word);
+  marks.sort((a, b) => a.start - b.start || b.len - a.len);
+  const picked = [];
+  for (const mk of marks) {
+    if (picked.some(p => !(mk.end <= p.start || mk.start >= p.end))) continue;
+    picked.push(mk);
+  }
+  picked.sort((a, b) => a.start - b.start);
+  let html = '', cursor = 0;
+  const wrapKnown = (slice) => {
+    const safe = esc(slice);
+    if (!knownRe) return safe;
+    knownRe.lastIndex = 0;
+    return safe.replace(knownRe, m => `<mark class="rd-known">${m}</mark>`);
+  };
+  for (const mk of picked) {
+    if (mk.start > cursor) html += wrapKnown(text.slice(cursor, mk.start));
+    const chunk = esc(text.slice(mk.start, mk.end));
+    if (mk.type === 'phrase') html += `<mark class="rd-imp-phrase">${chunk}</mark>`;
+    else html += `<mark class="rd-imp-word">${chunk}</mark>`;
+    cursor = mk.end;
+  }
+  if (cursor < text.length) html += wrapKnown(text.slice(cursor));
+  return html;
+}
 function highlightKnown(text, re) {
-  const safe = esc(text);
-  if (!re) return safe;
-  re.lastIndex = 0;
-  return safe.replace(re, m => `<mark class="rd-known">${m}</mark>`);
+  return highlightArticleEn(text, { knownRe: re });
 }
 
 /** 從節點取出純文字（去掉按鈕等） */
@@ -3496,9 +3590,8 @@ function plainEnText(node) {
   return (clone.textContent || '').replace(/\s+/g, ' ').trim();
 }
 
-/** 雙擊後取出選取的單字／短語 */
 function wordFromDblClick(e) {
-  if (e.target.closest('button, a, input, select, textarea, .speak-btn, .rd-add-vocab, .ls-regen')) return '';
+  if (e.target.closest('button, a, input, select, textarea, .speak-btn, .rd-add-vocab, .ls-regen, .rd-regen, .side-edit-toggle, .ed-del-row, .ed-add')) return '';
   const sel = window.getSelection();
   let w = (sel && String(sel.toString()) || '').trim();
   w = w.replace(/^[\s"'“”‘’(\[{«]+|[\s"'“”‘’.,!?;:…)\]}»]+$/g, '').trim();
@@ -3506,34 +3599,100 @@ function wordFromDblClick(e) {
   return w;
 }
 
-function sideVocabHtml(vocab, { jumpable = false } = {}) {
+const SIDE_LIST_FIELDS = {
+  vocab: {
+    cols: [['word', '單字'], ['pos', '詞性'], ['meaning_zh', '中文'], ['example_en', '例句'], ['example_zh', '例句中譯']],
+    blank: () => ({ word: '', pos: '', meaning_zh: '', example_en: '', example_zh: '' }),
+  },
+  phrases: {
+    cols: [['phrase', '片語'], ['meaning_zh', '中文'], ['example_en', '例句']],
+    blank: () => ({ phrase: '', meaning_zh: '', example_en: '' }),
+  },
+  patterns: {
+    cols: [['pattern', '句型'], ['explain_zh', '說明'], ['example_en', '例句']],
+    blank: () => ({ pattern: '', explain_zh: '', example_en: '' }),
+  },
+  grammar: {
+    cols: [['point', '重點'], ['explain_zh', '說明'], ['example_en', '例句']],
+    blank: () => ({ point: '', explain_zh: '', example_en: '' }),
+  },
+};
+
+let readerEditingSide = null; // 'vocab'|'phrases'|'patterns'|null
+let listenEditingSide = null; // 'vocab'|'phrases'|'grammar'|null
+
+function sideListEditorHtml(field, list) {
+  const cfg = SIDE_LIST_FIELDS[field];
+  if (!cfg) return '<p class="hint">—</p>';
+  const rows = (list || []).map((item, i) => {
+    const cells = cfg.cols.map(([k, label]) =>
+      `<label class="ed-cell"><span>${label}</span><input class="ed-input side-ed-input" data-side-field="${field}" data-idx="${i}" data-key="${k}" value="${attr(item[k])}" /></label>`
+    ).join('');
+    return `<div class="ed-row side-ed-row" style="grid-template-columns:repeat(${Math.min(cfg.cols.length, 3)},minmax(0,1fr)) auto">
+      ${cells}
+      <button class="ed-del-row" data-side-del="${field}" data-idx="${i}" title="刪除這列" type="button">✕</button>
+    </div>`;
+  }).join('');
+  return `<div class="side-editor" data-side-editor="${esc(field)}">
+    ${rows || '<p class="hint">尚無項目</p>'}
+    <button class="ed-add" data-side-add="${esc(field)}" type="button">＋ 新增一列</button>
+  </div>`;
+}
+
+function sideVocabHtml(vocab, { jumpable = false, editing = false } = {}) {
+  if (editing) return sideListEditorHtml('vocab', vocab);
   const list = vocab || [];
   if (!list.length) return '<p class="hint">—</p>';
-  // jumpable: true/'time' → data-start；'para' → data-pi（閱讀頁段落）
   const mode = jumpable === true ? 'time' : jumpable;
   const exLine = (ex, jumpVal) => {
     if (!ex) return '';
     if (!mode) {
-      return `<div class="rd-vex">${esc(ex)} <button class="speak-btn" data-speak="${esc(ex)}" data-src="browser" type="button">🔊</button></div>`;
+      return `<div class="example">${esc(ex)} <button class="speak-btn" data-speak="${esc(ex)}" data-src="browser" type="button">🔊</button></div>`;
     }
     const canJump = jumpVal != null && jumpVal !== '';
     if (mode === 'para') {
-      const cls = canJump ? 'rd-vex rd-jump' : 'rd-vex';
+      const cls = canJump ? 'example rd-jump' : 'example';
       const attrs = canJump ? ` data-pi="${jumpVal}" title="點擊跳到文章第 ${Number(jumpVal) + 1} 段"` : '';
       return `<div class="${cls}"${attrs}>${esc(ex)} <button class="speak-btn" data-speak="${esc(ex)}" data-src="browser" type="button">🔊</button></div>`;
     }
-    const cls = canJump ? 'rd-vex ls-jump' : 'rd-vex';
+    const cls = canJump ? 'example ls-jump' : 'example';
     const attrs = canJump ? ` data-start="${jumpVal}" title="點擊跳到影片／音檔對應處"` : '';
     return `<div class="${cls}"${attrs}>${esc(ex)} <button class="speak-btn" data-speak="${esc(ex)}" data-src="browser" type="button">🔊</button></div>`;
   };
   return list.map(v => {
     const jumpVal = mode === 'para' ? v.example_pi : v.example_start;
-    return `<div class="rd-vitem" data-word="${esc((v.word || '').toLowerCase())}">
-      <div class="rd-vhead"><b class="rd-vword">${esc(v.word)}</b>${spkw(v.word)}
-        <button class="btn ghost small rd-add-vocab" data-word="${esc(v.word)}" data-ex="${esc(v.example_en || '')}">＋ 加入詞庫</button></div>
-      ${v.meaning_zh ? `<div class="rd-vmean">${esc(v.meaning_zh)}</div>` : ''}
+    return `<div class="def-item rd-vitem" data-word="${esc((v.word || '').toLowerCase())}">
+      <div class="rd-vhead">
+        <b class="rd-vword">${esc(v.word)}</b>${spkw(v.word)}
+        ${v.pos ? `<span class="def-pos">${esc(v.pos)}</span>` : ''}
+        <button class="btn ghost small rd-add-vocab" data-word="${esc(v.word)}" data-ex="${esc(v.example_en || '')}">＋ 加入詞庫</button>
+      </div>
+      ${v.meaning_zh ? `<span class="def-zh">${esc(v.meaning_zh)}</span>${spkZh(v.meaning_zh)}` : ''}
       ${exLine(v.example_en, jumpVal)}
-      ${v.example_zh ? `<div class="rd-vexzh">${esc(v.example_zh)}</div>` : ''}
+      ${v.example_zh ? `<div class="ex-zh">${esc(v.example_zh)}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function sidePhrasesHtml(phrases, { jumpable = false, editing = false, field = 'phrases' } = {}) {
+  if (editing) return sideListEditorHtml(field, phrases);
+  const list = phrases || [];
+  if (!list.length) return '<p class="hint">—</p>';
+  return list.map(p => {
+    const key = field === 'grammar' ? (p.point || '') : (field === 'patterns' ? (p.pattern || '') : (p.phrase || ''));
+    const mean = field === 'patterns' || field === 'grammar' ? (p.explain_zh || '') : (p.meaning_zh || '');
+    const jumpVal = jumpable === 'para' ? p.example_pi : p.example_start;
+    const canJump = jumpable && jumpVal != null && jumpVal !== '';
+    const jumpCls = canJump ? (jumpable === 'para' ? ' rd-jump' : ' ls-jump') : '';
+    const jumpAttr = canJump
+      ? (jumpable === 'para'
+        ? ` data-pi="${jumpVal}" title="點擊跳到對應段落"`
+        : ` data-start="${jumpVal}" title="點擊跳到影片／音檔對應處"`)
+      : '';
+    return `<div class="def-item rd-pitem${jumpCls}"${jumpAttr}>
+      <div class="rd-vhead"><b>${esc(key)}</b> <button class="speak-btn" data-speak="${esc(key)}" data-src="browser" type="button">🔊</button></div>
+      ${mean ? `<div class="rd-vmean">${esc(mean)}</div>` : ''}
+      ${p.example_en ? `<div class="example${jumpCls}"${jumpAttr}>${esc(p.example_en)} <button class="speak-btn" data-speak="${esc(p.example_en)}" data-src="browser" type="button">🔊</button></div>` : ''}
     </div>`;
   }).join('');
 }
@@ -3544,13 +3703,14 @@ async function enrichSideVocabMeaning(store, word, onDone) {
   try {
     const schema = {
       type: 'object',
-      properties: { meaning_zh: { type: 'string' }, example_zh: { type: 'string' } },
+      properties: { pos: { type: 'string' }, meaning_zh: { type: 'string' }, example_zh: { type: 'string' } },
       required: ['meaning_zh'],
     };
     const out = await readerJSON(
-      `解釋英文「${word}」在此句中的意思，用簡短繁體中文（一詞或一小句即可）。\n句子：${entry.example_en || '（無）'}\n回傳 meaning_zh；若能翻譯整句也給 example_zh。只輸出 JSON。`,
+      `解釋英文「${word}」在此句中的意思。回傳：pos（詞性，如 n. / v. / adj.）、meaning_zh（簡短繁體中文）、可選 example_zh（整句中譯）。\n句子：${entry.example_en || '（無）'}\n只輸出 JSON。`,
       schema, 0.3, 512,
     );
+    if (out.pos) entry.pos = out.pos;
     if (out.meaning_zh) entry.meaning_zh = out.meaning_zh;
     if (out.example_zh) entry.example_zh = out.example_zh;
   } catch (e) {
@@ -3813,7 +3973,7 @@ function renderArticle(book, a) {
   if (a.mindmap) attachReaderMindmapPis(a);
 
   const paras = (a.paragraphs || []).map((p, i) => {
-    const en = highlightKnown(p.en || '', re);
+    const en = highlightArticleEn(p.en || '', { vocab: a.vocab, phrases: a.phrases, knownRe: re });
     const paraHasAi = hasAiAudio && (a.audioCues || []).some(c => c.i === i);
     return `<div class="rd-para" data-pi="${i}">
       <p class="rd-en">${en}
@@ -3824,23 +3984,14 @@ function renderArticle(book, a) {
     </div>`;
   }).join('') || '<p class="hint">（沒有逐段內容）</p>';
 
-  const vocabHtml = sideVocabHtml(a.vocab, { jumpable: 'para' });
-
-  const phraseHtml = (a.phrases || []).map(p => {
-    const canJump = p.example_pi != null && p.example_pi !== '';
-    const jump = canJump
-      ? ` class="rd-pitem rd-jump" data-pi="${p.example_pi}" title="點擊跳到對應段落"`
-      : ' class="rd-pitem"';
-    return `<div${jump}><b>${esc(p.phrase)}</b>${p.meaning_zh ? ` — ${esc(p.meaning_zh)}` : ''} <button class="speak-btn" data-speak="${esc(p.phrase)}" data-src="browser" type="button">🔊</button></div>`;
-  }).join('') || '<p class="hint">—</p>';
-
-  const patternHtml = (a.patterns || []).map(p => {
-    const canJump = p.example_pi != null && p.example_pi !== '';
-    const jump = canJump
-      ? ` class="rd-pitem rd-jump" data-pi="${p.example_pi}" title="點擊跳到對應段落"`
-      : ' class="rd-pitem"';
-    return `<div${jump}><b>${esc(p.pattern)}</b>${p.explain_zh ? `<div class="rd-vmean">${esc(p.explain_zh)}</div>` : ''}${p.example_en ? `<div class="rd-vex">${esc(p.example_en)} <button class="speak-btn" data-speak="${esc(p.example_en)}" data-src="browser" type="button">🔊</button></div>` : ''}</div>`;
-  }).join('') || '<p class="hint">—</p>';
+  const regen = part => `<button class="btn ghost small rd-regen" data-rdpart="${part}" title="重新生成這部分">↻</button>`;
+  const editBtn = (field) => {
+    const on = readerEditingSide === field;
+    return `<button class="btn ghost small side-edit-toggle" data-side-edit="${field}" type="button" title="${on ? '完成編輯' : '編輯此區'}">${on ? '✓ 完成' : '✏️ 編輯'}</button>`;
+  };
+  const vocabHtml = sideVocabHtml(a.vocab, { jumpable: 'para', editing: readerEditingSide === 'vocab' });
+  const phraseHtml = sidePhrasesHtml(a.phrases, { jumpable: 'para', editing: readerEditingSide === 'phrases', field: 'phrases' });
+  const patternHtml = sidePhrasesHtml(a.patterns, { jumpable: 'para', editing: readerEditingSide === 'patterns', field: 'patterns' });
 
   const followOn = localStorage.getItem('reader_follow') !== '0';
   const summaryBody = `<p>${a.summary ? esc(a.summary) : '<span class="hint">—</span>'}</p>`;
@@ -3864,7 +4015,7 @@ function renderArticle(book, a) {
       <div class="rd-main">
         <div class="rd-section">
           <div class="rd-sec-title">📖 逐段中英對照
-            <span class="hint" style="font-weight:400">（雙擊單字加入右側・點右側可跳段）</span>
+            <span class="hint" style="font-weight:400">（雙擊單字加入右側・綠底＝重要單字・綠底線＝重要片語）</span>
             <label class="listen-follow"><input type="checkbox" id="rdFollow"${followOn ? ' checked' : ''} /> 朗讀跟讀</label>
           </div>
           ${paras}
@@ -3872,16 +4023,63 @@ function renderArticle(book, a) {
       </div>
       <aside class="rd-aside">
         <div class="rd-summary">
-          <div class="rd-sec-title">📌 大意 ${a.summary ? spkZh(a.summary) : ''}</div>
+          <div class="rd-sec-title">📌 大意 ${a.summary ? spkZh(a.summary) : ''} ${regen('summary')}</div>
           ${summaryBody}
         </div>
-        ${readerCollapseHtml('mindmap', '🧠 心智圖大綱', mindBody)}
-        ${readerCollapseHtml('vocab', '🔑 重要單字', `<div id="rdVocabList">${vocabHtml}</div>`)}
-        ${readerCollapseHtml('phrases', '🧩 重要片語', phraseHtml)}
-        ${readerCollapseHtml('patterns', '🏗 重要句型', patternHtml)}
+        ${readerCollapseHtml('mindmap', `🧠 心智圖大綱 ${regen('mindmap')}`, mindBody)}
+        ${readerCollapseHtml('vocab', `🔑 重要單字 ${regen('vocab')} ${editBtn('vocab')}`, `<div id="rdVocabList">${vocabHtml}</div>`)}
+        ${readerCollapseHtml('phrases', `🧩 重要片語 ${regen('phrases')} ${editBtn('phrases')}`, `<div id="rdPhraseList">${phraseHtml}</div>`)}
+        ${readerCollapseHtml('patterns', `🏗 重要句型 ${regen('patterns')} ${editBtn('patterns')}`, `<div id="rdPatternList">${patternHtml}</div>`)}
       </aside>
     </div>`;
   applyHideZh();
+}
+
+/** 閱讀頁：重新生成某一部分重點 */
+async function rereadAnalyze(article, part) {
+  const book = readerBooks.find(b => b.id === readerCurrentBookId);
+  if (!book || !article) return;
+  const text = (article.paragraphs || []).map(p => p.en).join('\n').slice(0, 16000)
+    || String(article.body || '').slice(0, 16000);
+  if (!text.trim()) { toast('沒有文章內容', true); return; }
+  let schema, prompt, apply;
+  if (part === 'summary') {
+    schema = { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'] };
+    prompt = `用繁體中文寫出這篇文章的整體大意（3–5 句）。只輸出 JSON。\n\n文章：\n${text}`;
+    apply = o => { article.summary = o.summary || ''; };
+  } else if (part === 'vocab') {
+    schema = { type: 'object', properties: { vocab: { type: 'array', items: { type: 'object', properties: { word: { type: 'string' }, pos: { type: 'string' }, meaning_zh: { type: 'string' }, example_en: { type: 'string' }, example_zh: { type: 'string' } }, required: ['word'] } } }, required: ['vocab'] };
+    prompt = `你是英語精讀老師。從以下文章挑出 10–15 個重要單字，每個含 word、pos（詞性）、meaning_zh、example_en、example_zh。只輸出 JSON。\n\n文章：\n${text}`;
+    apply = o => { article.vocab = o.vocab || []; };
+  } else if (part === 'phrases') {
+    schema = { type: 'object', properties: { phrases: { type: 'array', items: { type: 'object', properties: { phrase: { type: 'string' }, meaning_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['phrase'] } } }, required: ['phrases'] };
+    prompt = `從以下文章挑出 5–10 個重要片語／搭配，附 meaning_zh 與 example_en（優先取自文章）。只輸出 JSON。\n\n文章：\n${text}`;
+    apply = o => { article.phrases = o.phrases || []; };
+  } else if (part === 'patterns') {
+    schema = { type: 'object', properties: { patterns: { type: 'array', items: { type: 'object', properties: { pattern: { type: 'string' }, explain_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['pattern'] } } }, required: ['patterns'] };
+    prompt = `從以下文章挑出 3–6 個重要句型／文法結構，附 explain_zh 與 example_en。只輸出 JSON。\n\n文章：\n${text}`;
+    apply = o => { article.patterns = o.patterns || []; };
+  } else if (part === 'mindmap') {
+    toast('重新整理心智圖大綱中…');
+    try {
+      article.mindmap = await generateReaderMindmap(article.paragraphs || []);
+      attachReaderMindmapPis(article);
+      book.updatedAt = now(); saveReader();
+      renderArticle(book, article);
+      toast('心智圖大綱已重新整理');
+    } catch (e) { toast('重新整理心智圖失敗：' + e.message, true); }
+    return;
+  } else return;
+  const label = { summary: '大意', vocab: '重要單字', phrases: '重要片語', patterns: '重要句型' }[part];
+  toast(`重新整理${label}中…`);
+  try {
+    const out = await readerJSON(prompt, schema, 0.5);
+    apply(out);
+    attachReaderExamplePis(article);
+    book.updatedAt = now(); saveReader();
+    renderArticle(book, article);
+    toast(`${label}已重新整理`);
+  } catch (e) { toast(`重新整理${label}失敗：` + e.message, true); }
 }
 function addListenSideVocab(word, exampleEn, exampleStart) {
   const item = listenItems.find(i => i.id === listenCurrentId);
@@ -4160,12 +4358,52 @@ function bindReader() {
     }
     if (e.target.closest('.speak-btn')) return; // 交給全域喇叭
     const head = e.target.closest('.rd-collapse-head');
-    if (head) {
+    if (head && !e.target.closest('button')) {
       const box = head.closest('.rd-collapse');
       if (box) {
         box.classList.toggle('collapsed');
         setReaderCollapse(box.dataset.collapse, box.classList.contains('collapsed'));
       }
+      return;
+    }
+    const regen = e.target.closest('.rd-regen');
+    if (regen) {
+      const book = readerBooks.find(b => b.id === readerCurrentBookId);
+      const a = book && book.articles && book.articles[readerCurrentTocId];
+      if (a) rereadAnalyze(a, regen.dataset.rdpart);
+      return;
+    }
+    const editToggle = e.target.closest('.side-edit-toggle');
+    if (editToggle) {
+      const field = editToggle.dataset.sideEdit;
+      readerEditingSide = readerEditingSide === field ? null : field;
+      const book = readerBooks.find(b => b.id === readerCurrentBookId);
+      const a = book && book.articles && book.articles[readerCurrentTocId];
+      if (book && a) renderArticle(book, a);
+      return;
+    }
+    const sideAdd = e.target.closest('[data-side-add]');
+    if (sideAdd) {
+      const field = sideAdd.dataset.sideAdd;
+      const book = readerBooks.find(b => b.id === readerCurrentBookId);
+      const a = book && book.articles && book.articles[readerCurrentTocId];
+      if (!a || !SIDE_LIST_FIELDS[field]) return;
+      a[field] = a[field] || [];
+      a[field].push(SIDE_LIST_FIELDS[field].blank());
+      book.updatedAt = now(); saveReader();
+      renderArticle(book, a);
+      return;
+    }
+    const sideDel = e.target.closest('[data-side-del]');
+    if (sideDel) {
+      const field = sideDel.dataset.sideDel;
+      const idx = +sideDel.dataset.idx;
+      const book = readerBooks.find(b => b.id === readerCurrentBookId);
+      const a = book && book.articles && book.articles[readerCurrentTocId];
+      if (!a || !Array.isArray(a[field])) return;
+      a[field].splice(idx, 1);
+      book.updatedAt = now(); saveReader();
+      renderArticle(book, a);
       return;
     }
     const jump = e.target.closest('.rd-jump');
@@ -4195,6 +4433,20 @@ function bindReader() {
       if (book && toc && confirm('重新用 AI 整理這篇文章？')) processArticle(book, toc);
       return;
     }
+  });
+  $('#readerArticle')?.addEventListener('input', e => {
+    const t = e.target.closest('.side-ed-input');
+    if (!t) return;
+    const book = readerBooks.find(b => b.id === readerCurrentBookId);
+    const a = book && book.articles && book.articles[readerCurrentTocId];
+    if (!a) return;
+    const field = t.dataset.sideField;
+    const idx = +t.dataset.idx;
+    if (!Array.isArray(a[field])) a[field] = [];
+    a[field][idx] = a[field][idx] || {};
+    a[field][idx][t.dataset.key] = t.value;
+    book.updatedAt = now();
+    saveReader();
   });
   $('#readerArticle')?.addEventListener('change', e => {
     if (e.target && e.target.id === 'rdSpeed') {
@@ -5048,13 +5300,13 @@ async function analyzeListen(item, showStage) {
   const vocabSchema = {
     type: 'object', properties: {
       summary: { type: 'string' },
-      vocab: { type: 'array', items: { type: 'object', properties: { word: { type: 'string' }, meaning_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['word'] } },
+      vocab: { type: 'array', items: { type: 'object', properties: { word: { type: 'string' }, pos: { type: 'string' }, meaning_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['word'] } },
     },
     required: ['vocab'],
   };
   try {
     const out = await readerJSON(
-      `你是英語聽力精聽老師。以下是一段音檔／影片的逐字稿。用繁體中文整理：\n- summary：整體大意（3–5 句）。\n- vocab：10–15 個重要單字，附中文意思(meaning_zh)與一個原文例句(example_en，必須儘量直接取自逐字稿原句)。\n只輸出 JSON（不要生成片語或文法）。\n\n逐字稿：\n${text}`,
+      `你是英語聽力精聽老師。以下是一段音檔／影片的逐字稿。用繁體中文整理：\n- summary：整體大意（3–5 句）。\n- vocab：10–15 個重要單字，附 pos（詞性，如 n./v./adj.）、中文意思(meaning_zh)與一個原文例句(example_en，必須儘量直接取自逐字稿原句)。\n只輸出 JSON（不要生成片語或文法）。\n\n逐字稿：\n${text}`,
       vocabSchema, 0.5,
     );
     item.summary = out.summary || item.summary || '';
@@ -5276,8 +5528,8 @@ async function relistenAnalyze(item, part) {
     prompt = `用繁體中文寫出以下逐字稿的整體大意（3–5 句）。只輸出 JSON。\n\n逐字稿：\n${text}`;
     apply = o => { item.summary = o.summary || ''; };
   } else if (part === 'vocab') {
-    schema = { type: 'object', properties: { vocab: { type: 'array', items: { type: 'object', properties: { word: { type: 'string' }, meaning_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['word'] } } }, required: ['vocab'] };
-    prompt = `你是英語聽力老師。從以下逐字稿挑出 10–15 個重要單字，用繁體中文附中文意思(meaning_zh)與一個例句(example_en，優先取自逐字稿)。只輸出 JSON。\n\n逐字稿：\n${text}`;
+    schema = { type: 'object', properties: { vocab: { type: 'array', items: { type: 'object', properties: { word: { type: 'string' }, pos: { type: 'string' }, meaning_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['word'] } } }, required: ['vocab'] };
+    prompt = `你是英語聽力老師。從以下逐字稿挑出 10–15 個重要單字，附 pos（詞性）、繁體中文意思(meaning_zh)與一個例句(example_en，優先取自逐字稿)。只輸出 JSON。\n\n逐字稿：\n${text}`;
     apply = o => { item.vocab = o.vocab || []; };
   } else if (part === 'phrases') {
     schema = { type: 'object', properties: { phrases: { type: 'array', items: { type: 'object', properties: { phrase: { type: 'string' }, meaning_zh: { type: 'string' }, example_en: { type: 'string' } }, required: ['phrase'] } } }, required: ['phrases'] };
@@ -5336,7 +5588,7 @@ function renderListenItem(item) {
   if ((item.segments || []).length) {
     tr.innerHTML = item.segments.map((s, i) =>
       `<div class="ls-seg" data-i="${i}" data-start="${s.start}">
-        <span class="ls-time">${fmtTime(s.start)}</span><span class="ls-en">${highlightKnown(s.en, re)}</span>
+        <span class="ls-time">${fmtTime(s.start)}</span><span class="ls-en">${highlightArticleEn(s.en, { vocab: item.vocab, phrases: item.phrases, knownRe: re })}</span>
         ${s.zh ? `<div class="ls-zh">${esc(s.zh)}</div>` : ''}
       </div>`).join('');
   }
@@ -5349,25 +5601,14 @@ function renderListenItem(item) {
       || (item.grammar || []).some(g => g.example_en && g.example_start == null)) {
       attachListenExampleStarts(item);
     }
-    const vocabHtml = `<div id="lsVocabList">${sideVocabHtml(item.vocab, { jumpable: true })}</div>`;
-    const exLine = (ex, start) => {
-      if (!ex) return '';
-      const canJump = start != null && start !== '';
-      const cls = canJump ? 'rd-vex ls-jump' : 'rd-vex';
-      const attrs = canJump ? ` data-start="${start}" title="點擊跳到影片／音檔對應處"` : '';
-      return `<div class="${cls}"${attrs}>${esc(ex)} <button class="speak-btn" data-speak="${esc(ex)}" data-src="browser" type="button">🔊</button></div>`;
-    };
-    const phraseHtml = (item.phrases || []).map(p => `<div class="rd-pitem">
-        <div class="rd-vhead"><b>${esc(p.phrase)}</b> <button class="speak-btn" data-speak="${esc(p.phrase)}" data-src="browser" type="button">🔊</button></div>
-        ${p.meaning_zh ? `<div class="rd-vmean">${esc(p.meaning_zh)}</div>` : ''}
-        ${exLine(p.example_en, p.example_start)}
-      </div>`).join('') || '<p class="hint">—</p>';
-    const grammarHtml = (item.grammar || []).map(g => `<div class="rd-pitem">
-        <b>${esc(g.point)}</b>
-        ${g.explain_zh ? `<div class="rd-vmean">${esc(g.explain_zh)}</div>` : ''}
-        ${exLine(g.example_en, g.example_start)}
-      </div>`).join('') || '<p class="hint">—</p>';
     const regen = part => `<button class="btn ghost small ls-regen" data-lspart="${part}" title="重新生成這部分">↻</button>`;
+    const editBtn = (field) => {
+      const on = listenEditingSide === field;
+      return `<button class="btn ghost small side-edit-toggle" data-side-edit="${field}" type="button">${on ? '✓ 完成' : '✏️ 編輯'}</button>`;
+    };
+    const vocabHtml = `<div id="lsVocabList">${sideVocabHtml(item.vocab, { jumpable: true, editing: listenEditingSide === 'vocab' })}</div>`;
+    const phraseHtml = `<div id="lsPhraseList">${sidePhrasesHtml(item.phrases, { jumpable: true, editing: listenEditingSide === 'phrases', field: 'phrases' })}</div>`;
+    const grammarHtml = `<div id="lsGrammarList">${sidePhrasesHtml(item.grammar, { jumpable: true, editing: listenEditingSide === 'grammar', field: 'grammar' })}</div>`;
     const summaryBody = `<p>${item.summary ? esc(item.summary) : '<span class="hint">—</span>'}</p>`;
     const mindBody = renderListenMindmap(item.mindmap);
     side.innerHTML = `
@@ -5376,9 +5617,9 @@ function renderListenItem(item) {
         ${summaryBody}
       </div>
       ${listenCollapseHtml('mindmap', `🧠 心智圖大綱 ${regen('mindmap')}`, mindBody)}
-      ${listenCollapseHtml('vocab', `🔑 重要單字 ${regen('vocab')}`, vocabHtml)}
-      ${listenCollapseHtml('phrases', `🧩 重要片語 ${regen('phrases')}`, phraseHtml)}
-      ${listenCollapseHtml('grammar', `🏗 重要文法 ${regen('grammar')}`, grammarHtml)}`;
+      ${listenCollapseHtml('vocab', `🔑 重要單字 ${regen('vocab')} ${editBtn('vocab')}`, vocabHtml)}
+      ${listenCollapseHtml('phrases', `🧩 重要片語 ${regen('phrases')} ${editBtn('phrases')}`, phraseHtml)}
+      ${listenCollapseHtml('grammar', `🏗 重要文法 ${regen('grammar')} ${editBtn('grammar')}`, grammarHtml)}`;
   } else if (item.status !== 'error') {
     side.innerHTML = '<div class="ls-processing"><span class="spinner"></span> 整理重點中…</div>';
   } else {
@@ -5582,8 +5823,38 @@ function bindListen() {
     }
     const regen = e.target.closest('.ls-regen');
     if (regen) { const it = listenItems.find(i => i.id === listenCurrentId); if (it) relistenAnalyze(it, regen.dataset.lspart); return; }
+    const editToggle = e.target.closest('.side-edit-toggle');
+    if (editToggle) {
+      const field = editToggle.dataset.sideEdit;
+      listenEditingSide = listenEditingSide === field ? null : field;
+      const it = listenItems.find(i => i.id === listenCurrentId);
+      if (it) renderListenItem(it);
+      return;
+    }
+    const sideAdd = e.target.closest('[data-side-add]');
+    if (sideAdd) {
+      const field = sideAdd.dataset.sideAdd;
+      const it = listenItems.find(i => i.id === listenCurrentId);
+      if (!it || !SIDE_LIST_FIELDS[field]) return;
+      it[field] = it[field] || [];
+      it[field].push(SIDE_LIST_FIELDS[field].blank());
+      it.updatedAt = now(); saveListen();
+      renderListenItem(it);
+      return;
+    }
+    const sideDel = e.target.closest('[data-side-del]');
+    if (sideDel) {
+      const field = sideDel.dataset.sideDel;
+      const idx = +sideDel.dataset.idx;
+      const it = listenItems.find(i => i.id === listenCurrentId);
+      if (!it || !Array.isArray(it[field])) return;
+      it[field].splice(idx, 1);
+      it.updatedAt = now(); saveListen();
+      renderListenItem(it);
+      return;
+    }
     const head = e.target.closest('.rd-collapse-head');
-    if (head) {
+    if (head && !e.target.closest('button')) {
       const box = head.closest('.rd-collapse');
       if (box) {
         box.classList.toggle('collapsed');
@@ -5593,6 +5864,19 @@ function bindListen() {
     }
     const add = e.target.closest('.rd-add-vocab');
     if (add) openReaderAdd(add.dataset.word, add.dataset.ex);
+  });
+  $('#listenSide')?.addEventListener('input', e => {
+    const t = e.target.closest('.side-ed-input');
+    if (!t) return;
+    const it = listenItems.find(i => i.id === listenCurrentId);
+    if (!it) return;
+    const field = t.dataset.sideField;
+    const idx = +t.dataset.idx;
+    if (!Array.isArray(it[field])) it[field] = [];
+    it[field][idx] = it[field][idx] || {};
+    it[field][idx][t.dataset.key] = t.value;
+    it.updatedAt = now();
+    saveListen();
   });
 }
 
