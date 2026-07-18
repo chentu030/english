@@ -942,7 +942,11 @@ function switchLang(lang) {
 /* =========================================================================
    Gemini API
    ========================================================================= */
-const _list = (props) => ({ type: 'array', items: { type: 'object', properties: props } });
+const _list = (props, itemRequired) => {
+  const items = { type: 'object', properties: props };
+  if (itemRequired?.length) items.required = itemRequired;
+  return { type: 'array', items };
+};
 
 // 每段共用的原始內容說明
 function rawBlock(raw) {
@@ -951,31 +955,109 @@ function rawBlock(raw) {
     : '（使用者沒有提供字典內容，請依你自己的知識整理。）';
 }
 
+/** 清洗音標：只保留短 IPA，擋掉模型把說明文字塞進音標欄 */
+function cleanPhonetic(s) {
+  const t = String(s || '').trim();
+  if (!t) return '';
+  const slash = t.match(/\/[^/\n]{1,48}\//);
+  if (slash) return slash[0];
+  const bracket = t.match(/\[[^\]\n]{1,48}\]/);
+  if (bracket) return bracket[0];
+  if (t.length <= 48 && !/\s{2,}|\b(phonetic|IPA|JSON|Note|Let's|provide|American|British|international|alphabet|reference|structure)\b/i.test(t)) {
+    return t;
+  }
+  return '';
+}
+
+/** 正規化「音標」段 */
+function normalizePhoneticsPart(part) {
+  return {
+    phonetic_uk: cleanPhonetic(part?.phonetic_uk),
+    phonetic_us: cleanPhonetic(part?.phonetic_us),
+  };
+}
+
+/** 正規化「釋義」段：確保 definitions 是乾淨陣列 */
+function normalizeDefinitionsPart(part) {
+  let defs = part?.definitions;
+  if (typeof defs === 'string' && defs.trim()) {
+    defs = [{ pos: '', meaning_zh: defs.trim(), meaning_en: '', example_en: '', example_zh: '' }];
+  }
+  if (!Array.isArray(defs)) defs = [];
+  defs = defs.map(d => ({
+    pos: String(d?.pos || '').trim(),
+    meaning_zh: String(d?.meaning_zh || '').trim(),
+    meaning_en: String(d?.meaning_en || '').trim(),
+    example_en: String(d?.example_en || '').trim(),
+    example_zh: String(d?.example_zh || '').trim(),
+  })).filter(d => d.meaning_zh || d.meaning_en);
+  return { definitions: defs };
+}
+
+/** 顯示用：髒音標不直接秀出 */
+function displayPhonetics(d) {
+  const uk = cleanPhonetic(d?.phonetic_uk);
+  const us = cleanPhonetic(d?.phonetic_us);
+  return [uk && `英 ${esc(uk)}`, us && `美 ${esc(us)}`].filter(Boolean).join('　');
+}
+
 // 分段任務：各段輸出小、聚焦，品質較好
 const SEGMENTS = [
+  {
+    key: 'phonetics',
+    schema: {
+      type: 'object',
+      properties: {
+        phonetic_uk: {
+          type: 'string',
+          description: 'British IPA only, e.g. /ˈfreɪm.wɜːk/. Empty string if unknown.',
+          maxLength: '40',
+        },
+        phonetic_us: {
+          type: 'string',
+          description: 'American IPA only, e.g. /ˈfreɪm.wɝːk/. Empty string if unknown.',
+          maxLength: '40',
+        },
+      },
+      required: ['phonetic_uk', 'phonetic_us'],
+      propertyOrdering: ['phonetic_uk', 'phonetic_us'],
+    },
+    temperature: 0.2,
+    prompt: (word, raw) => `你是${L().name}發音專家。請只輸出單字「${word}」的音標 JSON。
+${rawBlock(raw)}
+
+嚴格規則：
+- phonetic_uk：英式 IPA，格式如 /ˈwɜːd/；不知道就填空字串 ""。
+- phonetic_us：美式 IPA，格式如 /ˈwɝːd/；不知道就填空字串 ""。
+- 每個欄位只能是短音標字串，禁止任何說明、註解、英文散文、JSON 欄位名、思考過程。
+只輸出這兩個欄位。`,
+  },
   {
     key: 'base',
     schema: {
       type: 'object',
       properties: {
-        phonetic_uk: { type: 'string' },
-        phonetic_us: { type: 'string' },
         definitions: _list({
-          pos: { type: 'string' },
-          meaning_zh: { type: 'string' },
-          meaning_en: { type: 'string' },
-          example_en: { type: 'string' },
-          example_zh: { type: 'string' },
-        }),
+          pos: { type: 'string', description: 'Part of speech, e.g. n. / v. / adj.' },
+          meaning_zh: { type: 'string', description: 'Traditional Chinese meaning' },
+          meaning_en: { type: 'string', description: 'Optional English gloss; empty string ok' },
+          example_en: { type: 'string', description: `${L().name} example sentence` },
+          example_zh: { type: 'string', description: 'Traditional Chinese translation of the example' },
+        }, ['pos', 'meaning_zh', 'example_en', 'example_zh']),
       },
+      required: ['definitions'],
+      propertyOrdering: ['definitions'],
     },
-    prompt: (word, raw) => `你是${L().name}單字整理老師。請只整理${L().name}單字「${word}」的「音標與釋義」，輸出繁體中文為主的 JSON。
+    temperature: 0.35,
+    prompt: (word, raw) => `你是${L().name}單字整理老師。請只整理單字「${word}」的「釋義」，輸出繁體中文為主的 JSON。
 ${rawBlock(raw)}
 
-要求：
-- phonetic_uk / phonetic_us：音標（英文填英式/美式；德文可填 IPA 或留空）。
-- definitions：列出最常用的 2～5 個詞性與中文意思，meaning_en 填${L().name}原文釋義（可留空），每個附一個實用例句（example_en 填${L().name}例句 + example_zh 中文翻譯）。
-只做這部分，不要輸出其他欄位。`,
+嚴格規則：
+- 只輸出 definitions 陣列，不要音標、不要其他欄位。
+- 列出最常用的 2～5 個義項。
+- 每個義項必須有：pos（詞性，如 n./v./adj.）、meaning_zh（繁中意思）、example_en（${L().name}例句）、example_zh（例句中譯）；meaning_en 可留空字串。
+- 禁止把說明文字、思考過程、音標寫進任何欄位。
+只做釋義這部分。`,
   },
   {
     key: 'memory',
@@ -1118,14 +1200,14 @@ function releaseSlot() {
 }
 
 // 產生單一段落的 JSON（含金鑰輪詢、重試、併發限制）
-async function generateJSON(promptText, schema) {
+async function generateJSON(promptText, schema, opts = {}) {
   const keys = activeKeys();
   if (keys.length === 0) throw new Error('尚未設定 API 金鑰，請到「設定」填入。');
   const body = {
     contents: [{ role: 'user', parts: [{ text: promptText }] }],
     generationConfig: {
-      temperature: 0.7,
-      maxOutputTokens: 8192,
+      temperature: opts.temperature ?? 0.7,
+      maxOutputTokens: opts.maxOutputTokens ?? 8192,
       responseMimeType: 'application/json',
       responseSchema: schema,
     },
@@ -1157,6 +1239,27 @@ async function generateJSON(promptText, schema) {
   }
 }
 
+/** 跑單一段並做欄位清洗；釋義空則自動重試一次 */
+async function generateSegmentJSON(seg, word, raw) {
+  const opts = { temperature: seg.temperature };
+  let part = await generateJSON(seg.prompt(word, raw), seg.schema, opts);
+  if (seg.key === 'phonetics') return normalizePhoneticsPart(part);
+  if (seg.key === 'base') {
+    let norm = normalizeDefinitionsPart(part);
+    if (!norm.definitions.length) {
+      part = await generateJSON(
+        seg.prompt(word, raw) + '\n\n上一輪 definitions 為空，請務必輸出至少 2 個完整義項。',
+        seg.schema,
+        { temperature: 0.15 },
+      );
+      norm = normalizeDefinitionsPart(part);
+    }
+    if (!norm.definitions.length) throw new Error('釋義產生失敗（definitions 為空）');
+    return norm;
+  }
+  return part;
+}
+
 // 分段整理：把一個字拆成多個焦點小任務，各自輸出小、品質好，最後合併
 async function callGemini(word, raw, onProgress) {
   const segs = SEGMENTS;
@@ -1166,9 +1269,9 @@ async function callGemini(word, raw, onProgress) {
 
   const results = await Promise.all(segs.map(async seg => {
     try {
-      const part = await generateJSON(seg.prompt(word, raw), seg.schema);
+      const part = await generateSegmentJSON(seg, word, raw);
       doneCount++; report();
-      return { ok: true, part };
+      return { ok: true, key: seg.key, part };
     } catch (err) {
       doneCount++; report();
       return { ok: false, key: seg.key, err };
@@ -1179,13 +1282,18 @@ async function callGemini(word, raw, onProgress) {
   const merged = { word };
   results.forEach(r => { if (r.ok && r.part) Object.assign(merged, r.part); });
   merged.word = merged.word || word;
+  // 舊卡／髒資料防呆
+  Object.assign(merged, normalizePhoneticsPart(merged));
+  if (Array.isArray(merged.definitions)) {
+    Object.assign(merged, normalizeDefinitionsPart(merged));
+  }
 
-  // 至少要有基本釋義段成功，否則視為失敗
-  const baseFailed = results[0] && !results[0].ok;
+  // 至少要有釋義段成功，否則視為失敗（音標失敗可接受）
+  const base = results.find(r => r.key === 'base');
   const anyOk = results.some(r => r.ok);
-  if (baseFailed || !anyOk) {
-    const firstErr = results.find(r => !r.ok);
-    throw new Error(firstErr ? firstErr.err.message : '整理失敗');
+  if (!base?.ok || !anyOk) {
+    const firstErr = base?.err || results.find(r => !r.ok)?.err;
+    throw new Error(firstErr ? firstErr.message : '整理失敗');
   }
   return merged;
 }
@@ -1239,10 +1347,13 @@ async function regenerateSegment(segKey, btn) {
   const oldHtml = btn.innerHTML;
   btn.innerHTML = '<span class="spinner"></span> 生成中';
   try {
-    const part = await generateJSON(seg.prompt(word, raw), seg.schema);
+    const part = await generateSegmentJSON(seg, word, raw);
     // 清掉此段舊欄位再覆蓋
     Object.keys(seg.schema.properties).forEach(k => { delete data[k]; });
     Object.assign(data, part);
+    if (seg.key === 'base' || seg.key === 'phonetics') {
+      Object.assign(data, normalizePhoneticsPart(data));
+    }
     if (currentEntry.onChange) currentEntry.onChange();
     if (currentEntry.card) cloudUpsert(currentEntry.card);
     // 重新渲染（依當前檢視型態：欄位編輯器或預覽）
@@ -1496,7 +1607,7 @@ function buildEntryHtml(d, editable) {
   const examples = (d.examples || []).length
     ? d.examples.map(x => `<div class="example">${esc(x.en)}${spk(x.en)}<div class="ex-zh">${esc(x.zh || '')}</div></div>`).join('') : '';
 
-  const phon = [d.phonetic_uk && `英 ${esc(d.phonetic_uk)}`, d.phonetic_us && `美 ${esc(d.phonetic_us)}`].filter(Boolean).join('　');
+  const phon = displayPhonetics(d);
 
   const notesHtml = (d.notes && d.notes.trim())
     ? `<div class="entry-section"><div class="es-title">📝 我的筆記</div><div class="example" style="white-space:pre-wrap">${esc(d.notes)}</div></div>`
@@ -1605,11 +1716,11 @@ function renderEditor(data, container, onChange) {
       <span class="ed-saved" data-saved hidden>已自動儲存</span>
     </div>
     <div class="ed-group">
-      <div class="ed-title">基本</div>
+      <div class="ed-title"><span>基本</span><button class="seg-regen" data-seg="phonetics" title="用 AI 重新生成音標">↻ 重新生成音標</button></div>
       <label class="ed-field"><span>單字</span><input class="ed-input" data-field="word" value="${attr(data.word)}" /></label>
       <div class="ed-basic-grid">
-        <label class="ed-field"><span>英式音標</span><input class="ed-input" data-field="phonetic_uk" value="${attr(data.phonetic_uk)}" /></label>
-        <label class="ed-field"><span>美式音標</span><input class="ed-input" data-field="phonetic_us" value="${attr(data.phonetic_us)}" /></label>
+        <label class="ed-field"><span>英式音標</span><input class="ed-input" data-field="phonetic_uk" value="${attr(cleanPhonetic(data.phonetic_uk) || data.phonetic_uk)}" /></label>
+        <label class="ed-field"><span>美式音標</span><input class="ed-input" data-field="phonetic_us" value="${attr(cleanPhonetic(data.phonetic_us) || data.phonetic_us)}" /></label>
       </div>
     </div>
     ${arrGroup('definitions')}
@@ -2071,7 +2182,7 @@ function renderDeck() {
   list.innerHTML = filtered.map(c => {
     const d = c.data;
     const mean = (d.definitions || []).map(x => (x.pos ? x.pos + ' ' : '') + x.meaning_zh).join('；');
-    const phon = d.phonetic_us || d.phonetic_uk || '';
+    const phon = cleanPhonetic(d.phonetic_us) || cleanPhonetic(d.phonetic_uk) || '';
     const due = cardDueCount(c);
     const created = c.createdAt ? dateStr(new Date(c.createdAt)) : '';
     const mnems = d.mnemonics || [];
@@ -2352,7 +2463,7 @@ function clozeSentence(d) {
 }
 
 function renderFaces(d, mode) {
-  const phon = d.phonetic_us || d.phonetic_uk || '';
+  const phon = cleanPhonetic(d.phonetic_us) || cleanPhonetic(d.phonetic_uk) || '';
   const wordBlock = `<div class="fc-word">${esc(d.word)}${spkWord3(d.word)}</div>${phon ? `<div class="fc-phon">${esc(phon)}</div>` : ''}`;
   const defsFull = (d.definitions || []).map(x => `
     <div class="def-item">
