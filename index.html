@@ -431,6 +431,33 @@
     </div>
   </div>
 
+  <!-- ===================== 貼上文章彈窗（閱讀頁用） ===================== -->
+  <div id="readerPasteModal" class="modal" hidden>
+    <div class="modal-overlay" data-close-rpaste></div>
+    <div class="modal-box" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <span class="modal-title">貼上文章</span>
+        <div class="modal-actions">
+          <button class="modal-close" id="rpasteCloseBtn" title="關閉" data-close-rpaste>✕</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <label class="field">
+          <span class="field-label">文章標題</span>
+          <input type="text" id="rpasteTitle" autocomplete="off" placeholder="例如：文章來源或主題" />
+        </label>
+        <label class="field">
+          <span class="field-label">文章內容（可整篇貼上，會保留段落）</span>
+          <textarea id="rpasteBody" rows="14" placeholder="把整篇文章貼在這裡。段落之間空一行即可保留分段。沒有字數限制。"></textarea>
+        </label>
+        <div class="add-btns">
+          <button class="btn primary" id="rpasteConfirm">開始精讀</button>
+          <button class="btn ghost" data-close-rpaste>取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" hidden></div>
 
   <!-- PDF.js：解析上傳的 PDF 文字（閱讀頁用） -->

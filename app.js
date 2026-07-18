@@ -2847,7 +2847,8 @@ async function readerAddPdf(file) {
     saveReader();
     readerCurrentBookId = book.id; readerCurrentTocId = null;
     renderReader();
-    setHint('完成！點左側目錄任一篇開始精讀。');
+    const byPage = book.toc.some(t => t.byPage);
+    setHint(byPage ? '目錄自動辨識較不完整，已改用「分頁」方式；點任一頁即可精讀。' : '完成！點左側目錄任一篇開始精讀。');
     toast(`已加入《${title}》，共 ${book.toc.length} 篇`);
   } catch (e) {
     console.error(e);
@@ -2870,10 +2871,23 @@ async function readerParsePdf(file, onProgress) {
   return pages;
 }
 
+// 目錄整理失敗時的後備：把每一頁（有足夠文字的）當作一個可精讀的項目
+function fallbackToc(pages) {
+  const entries = [];
+  pages.forEach((t, i) => {
+    const txt = (t || '').trim();
+    if (txt.length < 120) return; // 略過幾乎空白的頁
+    const preview = txt.split(/\s+/).slice(0, 10).join(' ');
+    entries.push({ id: uid(), title: `第 ${i + 1} 頁 — ${preview}…`, section: '（自動分頁）', page: i + 1, byPage: true, done: false });
+  });
+  return entries;
+}
+
 async function readerBuildToc(pages) {
-  // 取前段文字（含頁碼標記）給 AI 抓目錄
-  let sample = ''; const LIMIT = 26000;
-  for (let i = 0; i < pages.length && sample.length < LIMIT; i++) {
+  // 目錄（Contents）幾乎都在最前面幾頁：聚焦前段頁面給 AI，涵蓋 Contents 頁即可完整抓到。
+  const FRONT_PAGES = 18, LIMIT = 45000;
+  let sample = '';
+  for (let i = 0; i < Math.min(pages.length, FRONT_PAGES) && sample.length < LIMIT; i++) {
     sample += `\n[P${i + 1}] ${pages[i]}`;
   }
   sample = sample.slice(0, LIMIT);
@@ -2888,21 +2902,44 @@ async function readerBuildToc(pages) {
       },
     }, required: ['entries'],
   };
-  const prompt = `以下是一本雜誌／刊物前段的文字（[P#] 為 PDF 頁碼）。請萃取這本刊物的「文章目錄」：\n- 列出每一篇實際文章的標題(title)、所屬版塊或專欄名稱(section)、以及起始頁碼(page，用最接近的 [P#] 數字)。\n- 略過廣告、版權頁、訂閱資訊等非文章內容。\n- 標題請用原文（英文）。\n只輸出 JSON。\n\n文字：\n${sample}`;
+  const prompt = `以下是一本雜誌／刊物「最前面幾頁」的文字（[P#] 為 PDF 頁碼）。這類刊物通常在前幾頁有一頁「目錄／Contents」，上面列出所有文章標題與頁碼。\n請依這頁目錄，完整萃取這本刊物的「文章目錄」：\n- 逐篇列出文章標題(title)、所屬版塊或專欄名稱(section)、頁碼(page，取最接近的 [P#] 數字）。\n- 以刊物自己的 Contents 頁為主要依據；若某頁明顯是目錄頁，請把上面每一項都列出來，不要遺漏。\n- 略過廣告、版權頁、訂閱資訊等非文章內容。\n- 標題請用原文（英文）。\n只輸出 JSON。\n\n文字：\n${sample}`;
   try {
-    const out = await readerJSON(prompt, schema, 0.3);
+    const out = await readerJSON(prompt, schema, 0.3, 16384);
     const entries = (out.entries || []).filter(e => e.title && e.title.trim());
+    if (!entries.length) throw new Error('AI 未回傳任何目錄項目');
     return entries.map(e => ({ id: uid(), title: e.title.trim(), section: (e.section || '').trim(), page: e.page || 0, done: false }));
   } catch (e) {
-    console.error('目錄整理失敗', e);
-    return [];
+    console.error('目錄整理失敗，改用自動分頁', e);
+    return fallbackToc(pages);
   }
 }
 
+function openReaderPaste() {
+  $('#rpasteTitle').value = '';
+  $('#rpasteBody').value = '';
+  $('#readerPasteModal').hidden = false;
+  document.body.classList.add('modal-open');
+  $('#rpasteBody').focus();
+}
+function closeReaderPaste() {
+  $('#readerPasteModal').hidden = true;
+  document.body.classList.remove('modal-open');
+}
+
+// 正規化貼上的文章：保留段落（空行）分段，但把段內硬斷行接回、清掉多餘空白
+function normalizePastedText(text) {
+  let t = String(text || '').replace(/\r\n?/g, '\n');
+  t = t.replace(/[ \t]+\n/g, '\n');            // 行尾空白
+  t = t.replace(/\n{3,}/g, '\n\n');            // 多個空行縮成一個
+  t = t.replace(/[ \t]{2,}/g, ' ');            // 行內多空白
+  return t.trim();
+}
+
 function readerAddText(title, text) {
+  const clean = normalizePastedText(text);
   const book = {
     id: uid(), title: title || '未命名文章', createdAt: now(), updatedAt: now(), kind: 'text',
-    pages: [text], toc: [{ id: uid(), title: title || '未命名文章', section: '', page: 1, done: false }], articles: {},
+    pages: [clean], toc: [{ id: uid(), title: title || '未命名文章', section: '', page: 1, done: false }], articles: {},
   };
   readerBooks.unshift(book);
   saveReader();
@@ -2922,6 +2959,11 @@ function readerArticleWindow(book, toc) {
   const full = readerFullText(book);
   if (!full) return '';
   if (book.kind === 'text') return full.replace(/\[P\d+\]\s*/g, '');
+  // 自動分頁的後備項目：直接取該頁及前後一頁的文字
+  if (toc.byPage && book.pages && toc.page) {
+    const p = toc.page - 1;
+    return book.pages.slice(Math.max(0, p), Math.min(book.pages.length, p + 2)).join('\n\n');
+  }
   const words = (toc.title || '').toLowerCase().split(/\s+/).filter(Boolean).slice(0, 8).map(escapeRegExp);
   let idx = -1;
   if (words.length) {
@@ -2953,14 +2995,16 @@ async function processArticle(book, toc) {
     return;
   }
 
-  // 1) 用 AI 清出乾淨正文
+  // 1) 用 AI 清出乾淨正文（貼上／截圖的文字已乾淨，直接沿用，保留使用者段落）
   let body = win;
-  try {
-    const cleanSchema = { type: 'object', properties: { article: { type: 'string' } }, required: ['article'] };
-    const cleanPrompt = `以下文字擷取自 PDF，可能夾雜頁碼標記[P#]、頁首頁尾、廣告或其他文章。請找出標題約為「${toc.title}」的那篇文章，輸出它的完整正文：\n- 合併被硬斷的行、還原自然段落（段落之間用換行分隔）。\n- 移除頁碼標記、頁首頁尾、圖說、廣告與其他文章。\n- 不要翻譯、不要加入任何說明，只輸出正文文字。\n\n文字：\n${win}`;
-    const cj = await readerJSON(cleanPrompt, cleanSchema, 0.2);
-    if (cj.article && cj.article.trim().length > 40) body = cj.article.trim();
-  } catch (e) { console.error('正文清理失敗，改用原始擷取', e); }
+  if (book.kind === 'pdf') {
+    try {
+      const cleanSchema = { type: 'object', properties: { article: { type: 'string' } }, required: ['article'] };
+      const cleanPrompt = `以下文字擷取自 PDF，可能夾雜頁碼標記[P#]、頁首頁尾、廣告或其他文章。請找出標題約為「${toc.title}」的那篇文章，輸出它的完整正文：\n- 合併被硬斷的行、還原自然段落（段落之間用換行分隔）。\n- 移除頁碼標記、頁首頁尾、圖說、廣告與其他文章。\n- 不要翻譯、不要加入任何說明，只輸出正文文字。\n\n文字：\n${win}`;
+      const cj = await readerJSON(cleanPrompt, cleanSchema, 0.2);
+      if (cj.article && cj.article.trim().length > 40) body = cj.article.trim();
+    } catch (e) { console.error('正文清理失敗，改用原始擷取', e); }
+  }
 
   // 2) 逐段中英對照（分塊翻譯）＋ 3) 重要單字/片語/句型 ＋ 4) 大意，平行處理
   status('AI 翻譯與精讀分析中…（重要單字、片語、句型、逐段對照、大意）');
@@ -3166,9 +3210,37 @@ async function geminiGenerate(parts, cfg = {}) {
     throw new Error(`所有金鑰都失敗了：${lastErr ? lastErr.message : '未知錯誤'}`);
   } finally { releaseSlot(); }
 }
-async function readerJSON(prompt, schema, temperature) {
-  const text = await geminiGenerate([{ text: prompt }], { schema, temperature, maxOutputTokens: 8192 });
-  try { return JSON.parse(text); } catch { throw new Error('無法解析回傳的 JSON。'); }
+// 盡量從模型回傳的字串救出 JSON：去除 ```json 圍欄、擷取最外層物件/陣列、修補被截斷的結尾
+function parseLooseJSON(text) {
+  let t = String(text || '').trim();
+  t = t.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  try { return JSON.parse(t); } catch {}
+  // 擷取第一個 { 或 [ 到對應收尾之間的內容
+  const start = t.search(/[{[]/);
+  if (start >= 0) {
+    const sub = t.slice(start);
+    try { return JSON.parse(sub); } catch {}
+    // 嘗試修補被截斷的 JSON：補上缺少的引號/括號
+    for (let end = sub.length; end > 0; end--) {
+      const cand = sub.slice(0, end);
+      try { return JSON.parse(cand); } catch {}
+    }
+  }
+  return null;
+}
+
+async function readerJSON(prompt, schema, temperature, maxTokens) {
+  const max = maxTokens || 8192;
+  let lastErr;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const text = await geminiGenerate([{ text: prompt }], { schema, temperature, maxOutputTokens: max });
+      const obj = parseLooseJSON(text);
+      if (obj && typeof obj === 'object') return obj;
+      lastErr = new Error('無法解析回傳的 JSON。');
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('無法解析回傳的 JSON。');
 }
 async function visionTranscribe(file) {
   const b64 = await fileToBase64(file);
@@ -3185,11 +3257,13 @@ function bindReader() {
     if (f) readerAddPdf(f);
     e.target.value = '';
   });
-  $('#readerPasteBtn')?.addEventListener('click', async () => {
-    const title = (prompt('文章標題（例如：文章來源或主題）') || '').trim();
-    if (title === null) return;
-    const text = (prompt('把文章英文內容貼在這裡：') || '').trim();
-    if (!text) { toast('沒有內容', true); return; }
+  $('#readerPasteBtn')?.addEventListener('click', openReaderPaste);
+  $('#readerPasteModal')?.addEventListener('click', e => { if (e.target.closest('[data-close-rpaste]')) closeReaderPaste(); });
+  $('#rpasteConfirm')?.addEventListener('click', () => {
+    const title = ($('#rpasteTitle').value || '').trim();
+    const text = ($('#rpasteBody').value || '');
+    if (!text.trim()) { toast('沒有內容', true); return; }
+    closeReaderPaste();
     readerAddText(title || '未命名文章', text);
   });
   $('#readerImgFile')?.addEventListener('change', async e => {
