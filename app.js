@@ -504,6 +504,7 @@ function init() {
   rolloverDaily();
   applyLangToModes();
   loadEnvKeys();
+  bindAutoHideScrollbars();
 
   applyTheme(localStorage.getItem(LS_THEME) || 'light');
   // 全域喇叭朗讀（事件委派）
@@ -3444,6 +3445,39 @@ function ttsJobsFromArticle(a) {
   return jobs;
 }
 
+function readerStopAudioOnly() {
+  // 只停掉目前 Audio，不遞增 gen（串流朗讀換段時用）
+  if (readerAudioEl) {
+    try { readerAudioEl.pause(); readerAudioEl.onended = null; readerAudioEl.ontimeupdate = null; } catch {}
+    readerAudioEl = null;
+  }
+}
+
+/** 播放單一 WAV blob URL，結束後 resolve；若已被停止則立刻 resolve(false) */
+function readerPlayBlobUrl(url, { paraIdx, gen } = {}) {
+  return new Promise((resolve) => {
+    if (gen != null && gen !== readerSpeakGen) { resolve(false); return; }
+    readerStopAudioOnly();
+    if (paraIdx != null) highlightReadingPara(paraIdx);
+    const audio = new Audio(url);
+    readerAudioEl = audio;
+    const applyRate = () => {
+      try { audio.playbackRate = getReaderSpeed(); } catch {}
+    };
+    const finish = (ok) => {
+      if (readerAudioEl === audio) readerAudioEl = null;
+      resolve(ok);
+    };
+    audio.addEventListener('ended', () => finish(true));
+    audio.addEventListener('error', () => finish(false));
+    audio.addEventListener('ratechange', () => {
+      if (Math.abs(audio.playbackRate - getReaderSpeed()) > 0.01) applyRate();
+    });
+    applyRate();
+    audio.play().then(() => applyRate()).catch(() => finish(false));
+  });
+}
+
 let readerTtsBusy = false;
 async function readerPlayAI(book, a) {
   const src = readerAudioSrc(a);
@@ -3452,40 +3486,80 @@ async function readerPlayAI(book, a) {
   if (!activeKeys().length) { toast('尚未設定 API 金鑰', true); return; }
   const jobs = ttsJobsFromArticle(a);
   if (!jobs.length) { toast('沒有內容可朗讀', true); return; }
+
   readerTtsBusy = true;
+  readerStopAudio(); // 取消舊朗讀並取得新 gen
+  const streamGen = readerSpeakGen;
   const btn = $('#rdReadAi');
   const setLabel = t => { if (btn) btn.textContent = t; };
   const keys = activeKeys();
-  const concurrency = Math.max(1, keys.length); // 有幾把金鑰就同時跑幾路
+  const concurrency = Math.max(1, keys.length);
+  const results = new Array(jobs.length).fill(null);
+  const resolvers = [];
+  const ready = jobs.map((_, i) => new Promise(r => { resolvers[i] = r; }));
   let done = 0;
+
+  setLabel(`🤖 邊生成邊朗讀 0/${jobs.length}…`);
+  toast('第一段就緒即開始朗讀…');
+
+  // 並行生成；每完成一段立刻通知播放佇列
+  const genPromise = mapPool(jobs, concurrency, async (job, jobIdx) => {
+    if (streamGen !== readerSpeakGen) return null;
+    const key = keys[jobIdx % keys.length];
+    const r = await geminiTTSChunk(job.text, key);
+    results[jobIdx] = r;
+    done++;
+    if (streamGen === readerSpeakGen) setLabel(`🤖 邊生成邊朗讀 ${done}/${jobs.length}…`);
+    resolvers[jobIdx](r);
+    return r;
+  });
+
+  const pcms = [];
+  const cues = [];
+  let t = 0;
+  let rate = 24000;
+  let played = 0;
+  let anyFail = false;
+
   try {
-    setLabel(`🤖 並行生成 0/${jobs.length}（${concurrency} 路）…`);
-    const results = await mapPool(jobs, concurrency, async (job, jobIdx) => {
-      const key = keys[jobIdx % keys.length];
-      const r = await geminiTTSChunk(job.text, key);
-      done++;
-      setLabel(`🤖 並行生成 ${done}/${jobs.length}（${concurrency} 路）…`);
-      return r;
-    });
-    if (results.some(r => !r)) {
+    for (let i = 0; i < jobs.length; i++) {
+      if (streamGen !== readerSpeakGen) break;
+      setLabel(`🤖 等待第 ${i + 1}/${jobs.length} 段…`);
+      const r = await ready[i];
+      if (streamGen !== readerSpeakGen) break;
+      if (!r) { anyFail = true; continue; }
+      rate = r.rate || rate;
+      const bytes = b64ToBytes(r.b64);
+      const dur = pcmDurationSec(bytes, rate);
+      cues.push({ i: jobs[i].i, start: t, end: t + dur });
+      t += dur;
+      pcms.push(bytes);
+      const url = pcmB64ToWavUrl(r.b64, rate);
+      setLabel(`▶️ 朗讀 ${i + 1}/${jobs.length}（邊生成邊播）`);
+      const ok = await readerPlayBlobUrl(url, { paraIdx: jobs[i].i, gen: streamGen });
+      try { URL.revokeObjectURL(url); } catch {}
+      if (!ok && streamGen !== readerSpeakGen) break;
+      played++;
+    }
+
+    await genPromise;
+    if (streamGen !== readerSpeakGen) {
+      setLabel(readerAudioSrc(a) ? '▶️ 播放 AI 語音' : '🤖 AI 朗讀整篇');
+      return;
+    }
+    if (!pcms.length) {
       toast('AI 語音生成失敗（可改用瀏覽器朗讀）', true);
       setLabel('🤖 AI 朗讀整篇');
       return;
     }
-    const rate = results[0].rate || 24000;
-    const pcms = [];
-    const cues = [];
-    let t = 0;
-    results.forEach((r, idx) => {
-      const bytes = b64ToBytes(r.b64);
-      const dur = pcmDurationSec(bytes, r.rate || rate);
-      cues.push({ i: jobs[idx].i, start: t, end: t + dur });
-      t += dur;
-      pcms.push(bytes);
-    });
+
+    // 串成整檔以便下次直接播、並可存雲端
     const blob = pcmChunksToWavBlob(pcms, rate);
     a.audioCues = cues;
+    if (a.audioLocalUrl) { try { URL.revokeObjectURL(a.audioLocalUrl); } catch {} }
     a.audioLocalUrl = URL.createObjectURL(blob);
+    book.updatedAt = now();
+    saveReaderLocal();
     setLabel('☁️ 保存中…');
     try {
       const fd = new FormData();
@@ -3496,17 +3570,21 @@ async function readerPlayAI(book, a) {
       a.audioUrl = j.url;
       book.updatedAt = now(); saveReader();
       setLabel('▶️ 播放 AI 語音');
-      renderArticle(book, a); // 讓每段出現 🤖 按鈕
-      readerPlayUrl(a.audioUrl, a.audioCues);
-      toast(`AI 語音完成（${concurrency} 路並行），已保存雲端`);
+      renderArticle(book, a);
+      toast(anyFail
+        ? `已朗讀 ${played}/${jobs.length} 段（部分失敗），音檔已保存`
+        : `AI 語音完成（邊生成邊播），已保存雲端`);
     } catch (e) {
-      book.updatedAt = now(); saveReaderLocal(); // 本機先留下 cues
+      book.updatedAt = now(); saveReaderLocal();
       renderArticle(book, a);
       setLabel('▶️ 播放 AI 語音');
-      readerPlayUrl(a.audioLocalUrl, cues);
-      toast('雲端保存失敗，先本機播放：' + e.message, true);
+      toast('雲端保存失敗，本機已可重播：' + e.message, true);
     }
-  } finally { readerTtsBusy = false; }
+  } finally {
+    readerTtsBusy = false;
+    if (streamGen === readerSpeakGen) clearReadingHighlight();
+    if (btn) setLabel(readerAudioSrc(a) ? '▶️ 播放 AI 語音' : '🤖 AI 朗讀整篇');
+  }
 }
 
 function openArticle(book, toc) {

@@ -47,12 +47,31 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
-/* ===================== 捲動軸（跟隨主題色） ===================== */
-* { scrollbar-color: var(--scrollbar) transparent; scrollbar-width: thin; }
+/* ===================== 捲動軸：預設隱藏，懸停／滾動時才顯示 ===================== */
+* { scrollbar-color: transparent transparent; scrollbar-width: thin; }
+*:hover, *.is-scrolling, *:focus-within {
+  scrollbar-color: var(--scrollbar) transparent;
+}
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
-::-webkit-scrollbar-thumb:hover { background: var(--scrollbar); }
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background .2s ease;
+}
+*:hover::-webkit-scrollbar-thumb,
+*.is-scrolling::-webkit-scrollbar-thumb,
+*:focus-within::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  background-clip: padding-box;
+}
+*:hover::-webkit-scrollbar-thumb:hover,
+*.is-scrolling::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar);
+  background-clip: padding-box;
+}
 
 body {
   font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, -apple-system, "Segoe UI", sans-serif;
