@@ -6319,12 +6319,30 @@ function renderListenItem(item) {
   listenActiveIdx = -1;
 }
 
+function getListenYtSpeed() {
+  const v = parseFloat(localStorage.getItem('listen_yt_speed') || '1');
+  return Number.isFinite(v) && v > 0 ? v : 1;
+}
+function applyListenYtSpeed(rate) {
+  const r = Number(rate) || 1;
+  localStorage.setItem('listen_yt_speed', String(r));
+  try {
+    if (ytPlayer && typeof ytPlayer.setPlaybackRate === 'function') ytPlayer.setPlaybackRate(r);
+  } catch {}
+  const sel = $('#ytChromeSpeed');
+  if (sel && document.activeElement !== sel) sel.value = String(r);
+}
+
 function renderListenPlayer(item) {
   listenStopPlayer();
   listenPlayerId = item.id;
   const box = $('#listenPlayer');
   if (item.kind === 'youtube' && item.videoId) {
     box.classList.remove('audio-only');
+    const speed = getListenYtSpeed();
+    const speedOpts = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+      .map(s => `<option value="${s}"${Math.abs(s - speed) < 0.01 ? ' selected' : ''}>${s}x</option>`)
+      .join('');
     // 隱藏 YouTube 原生上下控制列（消失很慢），改用我們自己的 hover 控制條（移開立刻消失）
     box.innerHTML = `
       <div id="ytFrame"></div>
@@ -6332,6 +6350,9 @@ function renderListenPlayer(item) {
         <button type="button" class="yt-chrome-btn" id="ytChromePlay" title="播放／暫停">▶</button>
         <input type="range" class="yt-chrome-seek" id="ytChromeSeek" min="0" max="1" value="0" step="0.1" />
         <span class="yt-chrome-time" id="ytChromeTime">0:00 / 0:00</span>
+        <label class="yt-chrome-speed" title="播放速度">
+          <select id="ytChromeSpeed" aria-label="播放速度">${speedOpts}</select>
+        </label>
         <button type="button" class="yt-chrome-btn" id="ytChromeFs" title="全螢幕">⛶</button>
       </div>`;
     ensureYT(() => {
@@ -6348,10 +6369,21 @@ function renderListenPlayer(item) {
         },
         events: {
           onReady: () => {
+            applyListenYtSpeed(getListenYtSpeed());
             listenStartPolling(() => (ytPlayer && ytPlayer.getCurrentTime) ? ytPlayer.getCurrentTime() : null);
             updateYtChrome();
           },
           onStateChange: () => updateYtChrome(),
+          onPlaybackRateChange: () => {
+            try {
+              const r = ytPlayer.getPlaybackRate?.();
+              if (r) {
+                localStorage.setItem('listen_yt_speed', String(r));
+                const sel = $('#ytChromeSpeed');
+                if (sel && document.activeElement !== sel) sel.value = String(r);
+              }
+            } catch {}
+          },
         },
       });
     });
@@ -6558,6 +6590,10 @@ function bindListen() {
   $('#listenPlayer')?.addEventListener('click', e => {
     if (e.target.closest('#ytChromePlay')) { ytTogglePlay(); return; }
     if (e.target.closest('#ytChromeFs')) { ytToggleFullscreen(); return; }
+  });
+  $('#listenPlayer')?.addEventListener('change', e => {
+    const speed = e.target.closest('#ytChromeSpeed');
+    if (speed) applyListenYtSpeed(speed.value);
   });
   $('#listenPlayer')?.addEventListener('input', e => {
     const seek = e.target.closest('#ytChromeSeek');

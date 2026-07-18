@@ -1231,6 +1231,26 @@ body:has(#view-listen.active #listenItem:not([hidden])) .container {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+.yt-chrome-speed {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
+.yt-chrome-speed select {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .14);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 8px;
+  cursor: pointer;
+  line-height: 1;
+}
+.yt-chrome-speed select:hover { background: rgba(255, 255, 255, .24); }
+.yt-chrome-speed option { color: #111; background: #fff; }
 .listen-transcript-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   font-weight: 700; font-size: 13px; margin-bottom: 6px; flex-wrap: wrap; flex-shrink: 0;
