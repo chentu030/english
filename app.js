@@ -214,7 +214,7 @@ function speak(text, lang) {
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = lang;
-    u.rate = 0.95;
+    u.rate = ($('#view-reader') && $('#view-reader').classList.contains('active')) ? getReaderSpeed() : 0.95;
     const voices = window.speechSynthesis.getVoices();
     const same = voices.filter(x => x.lang && x.lang.toLowerCase().startsWith(lang.slice(0, 2).toLowerCase()));
     const best = same.find(x => x.lang.toLowerCase() === lang.toLowerCase() && /google|microsoft|natural/i.test(x.name))
@@ -2783,8 +2783,16 @@ function saveReaderCloud() {
   if (!currentUid || !(window.Cloud && window.Cloud.enabled && window.Cloud.saveMeta)) return;
   clearTimeout(readerCloudTimer);
   readerCloudTimer = setTimeout(() => {
-    // 雲端不存 pages（可能很大且含 undefined），只存目錄與已處理文章
-    const slim = readerBooks.map(b => { const { pages, ...rest } = b; return rest; });
+    // 雲端不存 pages、也不存本機 blob URL（audioLocalUrl）
+    const slim = readerBooks.map(b => {
+      const { pages, ...rest } = b;
+      const articles = {};
+      Object.entries(rest.articles || {}).forEach(([id, a]) => {
+        const { audioLocalUrl, ...ar } = a || {};
+        articles[id] = ar;
+      });
+      return { ...rest, articles };
+    });
     window.Cloud.saveMeta(readerLangKey(), { books: slim });
   }, 1500);
 }
@@ -3159,6 +3167,14 @@ async function processArticle(book, toc) {
 /* ---------- 朗讀整篇：瀏覽器 / AI（AI 音檔存雲端 Storage，網址存 Firestore） ---------- */
 let readerAudioEl = null;
 let readerSpeakIdx = -1;
+let readerSpeed = parseFloat(localStorage.getItem('reader_speed') || '1') || 1;
+function getReaderSpeed() { return readerSpeed; }
+function setReaderSpeed(v) {
+  readerSpeed = Math.max(0.5, Math.min(2, parseFloat(v) || 1));
+  localStorage.setItem('reader_speed', String(readerSpeed));
+  if (readerAudioEl) readerAudioEl.playbackRate = readerSpeed;
+}
+function readerAudioSrc(a) { return (a && (a.audioUrl || a.audioLocalUrl)) || ''; }
 function clearReadingHighlight() {
   readerSpeakIdx = -1;
   document.querySelectorAll('.rd-para.reading').forEach(el => el.classList.remove('reading'));
@@ -3174,23 +3190,57 @@ function highlightReadingPara(i) {
   }
 }
 function readerStopAudio() {
-  if (readerAudioEl) { try { readerAudioEl.pause(); } catch {} readerAudioEl = null; }
+  if (readerAudioEl) {
+    try { readerAudioEl.pause(); readerAudioEl.onended = null; readerAudioEl.ontimeupdate = null; } catch {}
+    readerAudioEl = null;
+  }
   if (window.speechSynthesis) window.speechSynthesis.cancel();
   clearReadingHighlight();
 }
-function readerPlayUrl(url, cues) {
+function readerPlayUrl(url, cues, opts = {}) {
   readerStopAudio();
+  const startAt = opts.startAt || 0;
+  const endAt = opts.endAt;
   readerAudioEl = new Audio(url);
-  if (cues && cues.length) {
-    readerAudioEl.addEventListener('timeupdate', () => {
-      const t = readerAudioEl.currentTime;
+  readerAudioEl.playbackRate = getReaderSpeed();
+  const applyStart = () => {
+    if (startAt > 0 && readerAudioEl) {
+      try { readerAudioEl.currentTime = startAt; } catch {}
+    }
+  };
+  readerAudioEl.addEventListener('loadedmetadata', applyStart);
+  readerAudioEl.addEventListener('timeupdate', () => {
+    if (!readerAudioEl) return;
+    const t = readerAudioEl.currentTime;
+    if (endAt != null && t >= endAt - 0.05) {
+      readerAudioEl.pause();
+      clearReadingHighlight();
+      return;
+    }
+    if (cues && cues.length) {
       let hit = cues[0];
       for (const c of cues) { if (t >= c.start) hit = c; else break; }
       if (hit) highlightReadingPara(hit.i);
-    });
-  }
+    }
+  });
   readerAudioEl.addEventListener('ended', clearReadingHighlight);
-  readerAudioEl.play().catch(e => toast('播放失敗：' + e.message, true));
+  const play = () => readerAudioEl.play().catch(e => toast('播放失敗：' + e.message, true));
+  if (startAt > 0) {
+    readerAudioEl.addEventListener('canplay', () => { applyStart(); play(); }, { once: true });
+    readerAudioEl.load();
+  } else {
+    play();
+  }
+}
+
+// 播放某一段的 AI 語音（需已生成整篇並有時間軸）
+function readerPlayParaAI(a, paraIdx) {
+  const src = readerAudioSrc(a);
+  const cues = (a.audioCues || []).filter(c => c.i === paraIdx);
+  if (!src || !cues.length) { toast('此段尚無 AI 語音，請先按「AI 朗讀整篇」生成', true); return; }
+  const start = cues[0].start;
+  const end = cues[cues.length - 1].end;
+  readerPlayUrl(src, a.audioCues, { startAt: start, endAt: end });
 }
 
 // 瀏覽器逐段朗讀，並用藍色底標示當前段
@@ -3199,12 +3249,14 @@ function speakArticleWithHighlight(a) {
   readerStopAudio();
   const jobs = (a.paragraphs || []).map((p, i) => ({ i, text: (p.en || '').trim() })).filter(j => j.text);
   if (!jobs.length) { toast('沒有內容可朗讀', true); return; }
+  const rate = getReaderSpeed();
   let n = 0;
   const next = () => {
     if (n >= jobs.length) { clearReadingHighlight(); return; }
     const job = jobs[n++];
     highlightReadingPara(job.i);
     const u = makeUtterance(job.text, TARGET_LANG());
+    u.rate = rate;
     u.onend = next;
     u.onerror = next;
     window.speechSynthesis.speak(u);
@@ -3232,7 +3284,8 @@ function ttsJobsFromArticle(a) {
 
 let readerTtsBusy = false;
 async function readerPlayAI(book, a) {
-  if (a.audioUrl) { readerPlayUrl(a.audioUrl, a.audioCues); return; }
+  const src = readerAudioSrc(a);
+  if (src) { readerPlayUrl(src, a.audioCues); return; }
   if (readerTtsBusy) { toast('AI 語音生成中，請稍候…'); return; }
   if (!activeKeys().length) { toast('尚未設定 API 金鑰', true); return; }
   const jobs = ttsJobsFromArticle(a);
@@ -3269,6 +3322,8 @@ async function readerPlayAI(book, a) {
       pcms.push(bytes);
     });
     const blob = pcmChunksToWavBlob(pcms, rate);
+    a.audioCues = cues;
+    a.audioLocalUrl = URL.createObjectURL(blob);
     setLabel('☁️ 保存中…');
     try {
       const fd = new FormData();
@@ -3277,15 +3332,16 @@ async function readerPlayAI(book, a) {
       if (!res.ok) throw new Error('狀態 ' + res.status);
       const j = await res.json();
       a.audioUrl = j.url;
-      a.audioCues = cues;
       book.updatedAt = now(); saveReader();
       setLabel('▶️ 播放 AI 語音');
+      renderArticle(book, a); // 讓每段出現 🤖 按鈕
       readerPlayUrl(a.audioUrl, a.audioCues);
       toast(`AI 語音完成（${concurrency} 路並行），已保存雲端`);
     } catch (e) {
-      setLabel('🤖 AI 朗讀整篇');
-      a.audioCues = cues;
-      readerPlayUrl(URL.createObjectURL(blob), cues);
+      book.updatedAt = now(); saveReaderLocal(); // 本機先留下 cues
+      renderArticle(book, a);
+      setLabel('▶️ 播放 AI 語音');
+      readerPlayUrl(a.audioLocalUrl, cues);
       toast('雲端保存失敗，先本機播放：' + e.message, true);
     }
   } finally { readerTtsBusy = false; }
@@ -3318,10 +3374,18 @@ function highlightKnown(text, re) {
 function renderArticle(book, a) {
   const el = $('#readerArticle');
   const re = buildKnownWordRegex();
+  const hasAiAudio = !!(readerAudioSrc(a) && (a.audioCues || []).length);
+  const speed = getReaderSpeed();
+  const speedOpts = [0.75, 1, 1.25, 1.5, 1.75, 2].map(s =>
+    `<option value="${s}"${s === speed ? ' selected' : ''}>${s}x</option>`).join('');
   const paras = (a.paragraphs || []).map((p, i) => {
     const en = highlightKnown(p.en || '', re);
+    const paraHasAi = hasAiAudio && (a.audioCues || []).some(c => c.i === i);
     return `<div class="rd-para" data-pi="${i}">
-      <p class="rd-en">${en} <button class="speak-btn rd-para-spk" data-speak="${esc(p.en || '')}" data-src="browser" title="朗讀此段" type="button">🔊</button></p>
+      <p class="rd-en">${en}
+        <button class="speak-btn rd-para-spk" data-speak="${esc(p.en || '')}" data-src="browser" title="瀏覽器朗讀此段" type="button">🔊</button>
+        ${paraHasAi ? `<button class="rd-para-ai" data-pi="${i}" title="AI 語音此段" type="button">🤖</button>` : ''}
+      </p>
       <p class="rd-zh">${esc(p.zh || '')}</p>
     </div>`;
   }).join('') || '<p class="hint">（沒有逐段內容）</p>';
@@ -3345,8 +3409,11 @@ function renderArticle(book, a) {
     <div class="rd-article-head">
       <h2 class="rd-atitle">${esc(a.title)}</h2>
       <div class="rd-tools">
+        <label class="rd-speed" title="瀏覽器與 AI 朗讀語速">語速
+          <select id="rdSpeed">${speedOpts}</select>
+        </label>
         <button class="btn ghost small" id="rdReadAll">🔊 瀏覽器朗讀</button>
-        <button class="btn ghost small" id="rdReadAi">${a.audioUrl ? '▶️ 播放 AI 語音' : '🤖 AI 朗讀整篇'}</button>
+        <button class="btn ghost small" id="rdReadAi">${hasAiAudio ? '▶️ 播放 AI 語音' : '🤖 AI 朗讀整篇'}</button>
         <button class="btn ghost small" id="rdStop">⏹ 停止</button>
         <button class="btn ghost small" id="rdReprocess" title="重新用 AI 整理這篇">↻ 重新整理</button>
       </div>
@@ -3354,7 +3421,7 @@ function renderArticle(book, a) {
     ${a.summary ? `<div class="rd-summary"><div class="rd-sec-title">📌 段落大意 ${spkZh(a.summary)}</div><p>${esc(a.summary)}</p></div>` : ''}
     <div class="rd-body-split">
       <div class="rd-main">
-        <div class="rd-section"><div class="rd-sec-title">📖 逐段中英對照</div>${paras}</div>
+        <div class="rd-section"><div class="rd-sec-title">📖 逐段中英對照${hasAiAudio ? ' <span class="hint" style="font-weight:400">（每段可按 🤖 聽 AI 語音）</span>' : ''}</div>${paras}</div>
       </div>
       <aside class="rd-aside">
         <div class="rd-section"><div class="rd-sec-title">🔑 重要單字</div>${vocabHtml}</div>
@@ -3571,6 +3638,13 @@ function bindReader() {
     if (toc) openArticle(book, toc);
   });
   $('#readerArticle')?.addEventListener('click', e => {
+    const paraAi = e.target.closest('.rd-para-ai');
+    if (paraAi) {
+      const book = readerBooks.find(b => b.id === readerCurrentBookId);
+      const a = book && book.articles && book.articles[readerCurrentTocId];
+      if (a) readerPlayParaAI(a, parseInt(paraAi.dataset.pi, 10));
+      return;
+    }
     if (e.target.closest('.speak-btn')) return; // 交給全域喇叭
     const add = e.target.closest('.rd-add-vocab');
     if (add) { openReaderAdd(add.dataset.word, add.dataset.ex); return; }
@@ -3592,6 +3666,12 @@ function bindReader() {
       const toc = book && (book.toc || []).find(t => t.id === readerCurrentTocId);
       if (book && toc && confirm('重新用 AI 整理這篇文章？')) processArticle(book, toc);
       return;
+    }
+  });
+  $('#readerArticle')?.addEventListener('change', e => {
+    if (e.target && e.target.id === 'rdSpeed') {
+      setReaderSpeed(e.target.value);
+      toast(`語速已設為 ${getReaderSpeed()}x`);
     }
   });
 
