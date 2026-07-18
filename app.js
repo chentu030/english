@@ -4064,7 +4064,7 @@ async function listenAddYoutube(url) {
   const setHint = t => { if (hint) hint.textContent = t; };
   const vid = (url.match(/(?:v=|youtu\.be\/|\/embed\/|\/shorts\/)([A-Za-z0-9_-]{11})/) || [])[1] || '';
   const item = {
-    id: uid(), title: 'YouTube ' + (vid || ''), kind: 'youtube', videoId: vid,
+    id: uid(), title: vid ? `讀取中…` : 'YouTube', kind: 'youtube', videoId: vid,
     createdAt: now(), updatedAt: now(), status: 'processing', language: listenLangCode(),
     segments: [], vocab: [], phrases: [], grammar: [], summary: '',
   };
@@ -4080,9 +4080,20 @@ async function listenAddYoutube(url) {
     if (!res.ok) throw new Error('後端回應錯誤 ' + res.status);
     const j = await res.json();
     item.videoId = j.videoId || vid;
+    const ytTitle = (j.title || '').trim();
+    if (ytTitle) {
+      item.title = ytTitle;
+      if (listenCurrentId === item.id) {
+        const tEl = $('#listenTitle');
+        if (tEl) tEl.textContent = ytTitle;
+      }
+    } else if (!item.title || item.title === '讀取中…') {
+      item.title = 'YouTube ' + (item.videoId || '');
+    }
     item.captionSource = j.captionSource;
     item.segments = (j.segments || []).map(s => ({ start: s.start, end: s.end, en: (s.text || '').trim(), zh: '' }));
     saveListen();
+    renderListenList();
     setHint('');
     const src = j.captionSource;
     if (src === 'manual') toast('已使用 YouTube 人工字幕（未下載轉錄）');
