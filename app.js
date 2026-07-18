@@ -6876,33 +6876,24 @@ function bindSelAiPop() {
   if (!pop) return;
 
   // 在小框上 mousedown 避免清掉選取／立刻關閉
-  pop.addEventListener('mousedown', e => e.preventDefault());
+  pop.addEventListener('mousedown', e => {
+    // 允許在輸入框正常點選／輸入
+    if (e.target.closest('input, textarea, select, button')) return;
+    e.preventDefault();
+  });
 
+  // 有新的框選才打開／更新小框；點外面、捲動、Esc 都不關，只靠 ✕
   const onSelEnd = (e) => {
     if (e.target && e.target.closest && e.target.closest('#selAiPop')) return;
-    // 等瀏覽器完成選取（含觸控）
     setTimeout(() => {
       const hit = selectionInRoots();
-      if (hit) {
-        const rect = hit.range.getBoundingClientRect();
-        if (rect.width || rect.height) showSelAiPop(hit.text, hit.context, rect);
-        else hideSelAiPop();
-      } else if (!(e.target && e.target.closest && e.target.closest('#selAiPop'))) {
-        hideSelAiPop();
-      }
+      if (!hit) return;
+      const rect = hit.range.getBoundingClientRect();
+      if (rect.width || rect.height) showSelAiPop(hit.text, hit.context, rect);
     }, 10);
   };
   document.addEventListener('mouseup', onSelEnd);
   document.addEventListener('touchend', onSelEnd, { passive: true });
-
-  document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') hideSelAiPop();
-  });
-  document.addEventListener('scroll', (e) => {
-    // 小框內捲動答案不關閉
-    if (e.target && e.target.closest && e.target.closest('#selAiPop')) return;
-    hideSelAiPop();
-  }, true);
 
   pop.addEventListener('click', e => {
     const chip = e.target.closest('[data-sel-chip]');
