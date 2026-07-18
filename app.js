@@ -3762,10 +3762,9 @@ function sideVocabHtml(vocab, { jumpable = false, editing = false } = {}) {
     return `<div class="def-item rd-vitem" data-word="${esc((v.word || '').toLowerCase())}">
       <div class="rd-vhead">
         <b class="rd-vword">${esc(v.word)}</b>${spkw(v.word)}
-        ${v.pos ? `<span class="def-pos">${esc(v.pos)}</span>` : ''}
         <button class="btn ghost small rd-add-vocab" data-word="${esc(v.word)}" data-ex="${esc(v.example_en || '')}">＋ 加入詞庫</button>
       </div>
-      ${v.meaning_zh ? `<span class="def-zh">${esc(v.meaning_zh)}</span>${spkZh(v.meaning_zh)}` : ''}
+      ${(v.pos || v.meaning_zh) ? `<div class="rd-vmean">${v.pos ? `<span class="def-pos">${esc(v.pos)}</span>` : ''}${v.meaning_zh ? `<span class="def-zh">${esc(v.meaning_zh)}</span>${spkZh(v.meaning_zh)}` : ''}</div>` : ''}
       ${exLine(v.example_en, jumpVal)}
       ${v.example_zh ? `<div class="ex-zh">${esc(v.example_zh)}</div>` : ''}
     </div>`;

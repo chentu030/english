@@ -1019,7 +1019,7 @@ body:has(#view-reader.active #readerBook:not([hidden])) .container {
 .rd-vitem { padding: 8px 0; border-bottom: 1px solid var(--border); }
 .rd-vhead { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .rd-vword { font-size: 15px; }
-.rd-vmean { color: var(--text-soft); font-size: 13px; margin-top: 2px; }
+.rd-vmean { color: var(--text-soft); font-size: 13px; margin-top: 2px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .rd-vex { font-size: 13px; margin-top: 3px; }
 .rd-vex.ls-jump, .rd-vex.rd-jump, .rd-pitem.rd-jump {
   cursor: pointer; border-radius: 4px; padding: 2px 4px; margin-left: -4px;
