@@ -847,6 +847,8 @@ body.modal-open { overflow: hidden; }
 .rd-vword { font-size: 15px; }
 .rd-vmean { color: var(--text-soft); font-size: 13px; margin-top: 2px; }
 .rd-vex { font-size: 13px; margin-top: 3px; }
+.rd-vex.ls-jump { cursor: pointer; border-radius: 4px; padding: 2px 4px; margin-left: -4px; }
+.rd-vex.ls-jump:hover { background: var(--primary-soft); }
 .rd-vexzh { font-size: 12px; color: var(--text-mute); }
 .rd-pitem { padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
 .rd-para-spk { vertical-align: middle; }
@@ -904,6 +906,8 @@ body.modal-open { overflow: hidden; }
 .ls-time { font-size: 11px; color: var(--text-mute); margin-right: 6px; font-variant-numeric: tabular-nums; }
 .ls-en { line-height: 1.7; color: var(--text); }
 .ls-zh { line-height: 1.6; color: var(--text-soft); font-size: 13px; margin-top: 2px; }
+html.hide-zh .rd-zh,
+html.hide-zh .ls-zh { display: none !important; }
 
 .listen-side {
   position: sticky; top: 72px; max-height: calc(100vh - 96px); overflow-y: auto;
