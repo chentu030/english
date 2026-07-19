@@ -75,6 +75,82 @@ function focusAfterWord(text, word) {
   return i >= 0 ? t.slice(i) : t;
 }
 
+function stripMdLinks(s) {
+  return String(s || '')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
+}
+
+function collinsLooksReal(text, slug) {
+  const t = String(text || '').toLowerCase();
+  const w = String(slug || '').toLowerCase();
+  if (t.length < 80) return false;
+  const junk = ['opt-out request', 'manage your privacy', 'do not share or sell', 'agree and close'];
+  const junkHits = junk.filter((j) => t.includes(j)).length;
+  const hasForms = t.includes('word forms');
+  const hasCobuild = new RegExp(`\\ba ${w} is\\b|\\ban ${w} is\\b`, 'i').test(t);
+  if (junkHits && !hasForms && !hasCobuild) return false;
+  if (/\b1\.\s*(countable|uncountable|verb|noun|adjective|adverb|phrase)/i.test(t)) return true;
+  const signals = [
+    'word forms', 'countable noun', 'uncountable noun', 'transitive verb',
+    'in british english', 'in american english', 'synonyms:',
+    `a ${w} is`, `an ${w} is`, 'cobuild',
+  ];
+  return signals.filter((s) => t.includes(s)).length >= 1;
+}
+
+function extractCollinsBody(raw, slug) {
+  const s = String(slug || '').toLowerCase();
+  const html = String(raw || '');
+  if (html.slice(0, 800).includes('<') || /dictentry|class=["']def["']/i.test(html)) {
+    const chunks = [];
+    const patterns = [
+      /<div[^>]*class="[^"]*content\s+definitions[^"]*"[^>]*>([\s\S]*?)<\/div>/gi,
+      /<div[^>]*class="[^"]*dictentry[^"]*"[^>]*>([\s\S]*?)(?=<div[^>]*class="[^"]*dictentry|$)/gi,
+      /<span[^>]*class="[^"]*\bdef\b[^"]*"[^>]*>([\s\S]*?)<\/span>/gi,
+    ];
+    for (const re of patterns) {
+      let m;
+      const r = new RegExp(re.source, re.flags);
+      while ((m = r.exec(html))) {
+        const chunk = htmlToText(m[1]);
+        if (chunk.length > 40) chunks.push(chunk);
+      }
+      if (chunks.length >= 3) break;
+    }
+    if (chunks.length) {
+      const body = chunks.join('\n');
+      if (collinsLooksReal(body, s)) return body;
+    }
+  }
+
+  let t = stripMdLinks(html);
+  t = t.replace(
+    /Opt-Out Request Honored[\s\S]*?(?=Word forms|##\s*\w|\b1\.\s*(?:countable|uncountable)|in British English|in American English)/i,
+    ' ',
+  );
+  const anchors = [
+    /Word forms\s*:/i,
+    new RegExp(`##\\s*${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'),
+    /in British English/i,
+    /in American English/i,
+    /\b1\.\s*(?:countable|uncountable|verb|adjective|adverb|noun|phrase)/i,
+    new RegExp(`\\bA ${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} is\\b`, 'i'),
+    new RegExp(`\\bAn ${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} is\\b`, 'i'),
+  ];
+  let best = t;
+  for (const a of anchors) {
+    const m = t.match(a);
+    if (m && m.index != null) {
+      best = t.slice(m.index);
+      break;
+    }
+  }
+  best = best.split(/\n(?:Browse alphabetically|Trends of |Source:\s*Collins|Get the latest|You may also like)/i)[0];
+  best = best.replace(/\s+/g, ' ').trim();
+  return collinsLooksReal(best, s) ? best : '';
+}
+
 function sourcesFor(word) {
   const s = slugWord(word);
   const q = encodeURIComponent(s);
@@ -97,19 +173,15 @@ function sourcesFor(word) {
     {
       id: 'collins',
       name: '柯林斯 Collins',
+      preferJina: true,
+      jinaSelectors: ['.content.definitions', '.dictentry', 'main', 'article'],
       urls: [
         `https://www.collinsdictionary.com/dictionary/english/${q}`,
         `https://www.collinsdictionary.com/dictionary/english-chinese/${q}`,
       ],
-      extract: (html) =>
-        focusAfterWord(
-          extractChunks(html, [
-            /<div[^>]*class="[^"]*dictionary[^"]*homograph[^"]*"[^>]*>([\s\S]*?)<\/div>/gi,
-            /<div[^>]*class="[^"]*content definitions[^"]*"[^>]*>([\s\S]*?)<\/div>/gi,
-            /<div[^>]*class="[^"]*homograph-entry[^"]*"[^>]*>([\s\S]*?)<\/div>/gi,
-          ]) || htmlToText(html),
-          s,
-        ),
+      extract: (raw) => extractCollinsBody(raw, s),
+      maxLen: 4500,
+      validate: (body) => collinsLooksReal(body, s),
     },
     {
       id: 'ldoce',
@@ -197,13 +269,15 @@ async function fetchUrl(url, ms = 10000) {
   }
 }
 
-async function fetchViaJina(url, ms = 14000) {
+async function fetchViaJina(url, ms = 20000, targetSelector) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
+    const headers = { Accept: 'text/plain', 'User-Agent': UA, 'X-Retain-Images': 'none' };
+    if (targetSelector) headers['X-Target-Selector'] = targetSelector;
     const res = await fetch('https://r.jina.ai/' + url, {
       signal: ctrl.signal,
-      headers: { Accept: 'text/plain', 'User-Agent': UA },
+      headers,
     });
     if (!res.ok) throw new Error(`Jina ${res.status}`);
     return await res.text();
@@ -214,11 +288,33 @@ async function fetchViaJina(url, ms = 14000) {
 
 async function fetchOneSource(src) {
   let lastErr = '';
+
+  const finalize = (raw, url, via) => {
+    const body = src.extract ? src.extract(raw) : '';
+    if (src.validate && !src.validate(body)) throw new Error('content failed validation');
+    const text = cleanSourceText(src.name, body, src.maxLen || 3800);
+    if (!text) throw new Error('empty after clean');
+    return { id: src.id, name: src.name, url, text, via };
+  };
+
+  // 柯林斯：先走 Jina + CSS，避開 CF 與導覽噪音
+  if (src.preferJina || (src.jinaSelectors && src.jinaSelectors.length)) {
+    for (const url of src.urls) {
+      for (const sel of src.jinaSelectors || [undefined]) {
+        try {
+          const md = await fetchViaJina(url, 20000, sel);
+          return finalize(md, url, sel ? `jina:${sel}` : 'jina');
+        } catch (e) {
+          lastErr = e.message || String(e);
+        }
+      }
+    }
+  }
+
   for (const url of src.urls) {
     try {
       const html = await fetchUrl(url);
-      const text = cleanSourceText(src.name, src.extract(html), 3800);
-      if (text) return { id: src.id, name: src.name, url, text, via: 'direct' };
+      return finalize(html, url, 'direct');
     } catch (e) {
       lastErr = e.message || String(e);
     }
@@ -227,8 +323,7 @@ async function fetchOneSource(src) {
   for (const url of src.urls) {
     try {
       const md = await fetchViaJina(url);
-      const text = cleanSourceText(src.name, md, 3800);
-      if (text) return { id: src.id, name: src.name, url, text, via: 'jina' };
+      return finalize(md, url, 'jina');
     } catch (e) {
       lastErr = e.message || String(e);
     }
@@ -277,9 +372,16 @@ module.exports = async (req, res) => {
   try {
     const sources = sourcesFor(slug);
     const results = await Promise.all([...sources.map(fetchOneSource), fetchFreeDictSource(slug)]);
-    const ok = results.filter((r) => r.text);
-    const parts = ok.map((r) => r.text);
-    const text = parts.join('\n\n').slice(0, 14000);
+    const order = ['cambridge', 'collins', 'ldoce', 'eudic', 'etymonline', 'freedict'];
+    const byId = Object.fromEntries(results.filter((r) => r.text).map((r) => [r.id, r]));
+    const parts = [];
+    for (const id of order) {
+      if (byId[id]) parts.push(byId[id].text);
+    }
+    for (const r of results) {
+      if (r.text && !order.includes(r.id)) parts.push(r.text);
+    }
+    const text = parts.join('\n\n').slice(0, 16000);
     res.setHeader('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
     return res.status(200).json({
       word: slug,
