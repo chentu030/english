@@ -133,6 +133,75 @@ window.Cloud = {
     catch (e) { console.error('寫入 meta 失敗', name, e); }
   },
 
+  // ---- 聽力：每則獨立文件（避免整包塞進單一 meta 超過 1MB）----
+  // users/{uid}/listen_{lang}/{itemId}
+  _listenCol(lang) {
+    return colRef(`listen_${lang || 'en'}`);
+  },
+  _listenDoc(lang, id) {
+    return docRef(`listen_${lang || 'en'}`, id);
+  },
+  _stripUndefined(obj) {
+    try { return JSON.parse(JSON.stringify(obj)); }
+    catch { return obj; }
+  },
+
+  async loadListenItems(lang) {
+    if (!db || !UID) return null;
+    const key = lang || 'en';
+    try {
+      const snap = await getDocs(this._listenCol(key));
+      const items = [];
+      snap.forEach(d => {
+        const data = d.data() || {};
+        items.push(data.id ? data : { ...data, id: d.id });
+      });
+      if (items.length) return items;
+
+      // 舊版：整包存在 meta/listen_{lang}.items → 搬到逐筆文件
+      const meta = await this.loadMeta(`listen_${key}`);
+      if (meta && Array.isArray(meta.items) && meta.items.length) {
+        await this.upsertListenItems(key, meta.items);
+        try {
+          await this.saveMeta(`listen_${key}`, {
+            v: 2, migratedAt: Date.now(), count: meta.items.length,
+          });
+        } catch (e) { console.error('精簡聽力 meta 失敗', e); }
+        return meta.items;
+      }
+      return [];
+    } catch (e) {
+      console.error('讀取聽力集合失敗', e);
+      return null;
+    }
+  },
+
+  async upsertListenItem(lang, item) {
+    if (!db || !UID || !item?.id) return;
+    const clean = this._stripUndefined(item);
+    await setDoc(this._listenDoc(lang, item.id), clean);
+  },
+
+  async upsertListenItems(lang, items) {
+    if (!db || !UID || !items?.length) return;
+    const list = items.filter(it => it && it.id);
+    // 逐筆寫入：單則聽力可能很大，不宜塞進 writeBatch
+    for (const it of list) {
+      try {
+        await this.upsertListenItem(lang, it);
+      } catch (e) {
+        console.error('寫入聽力失敗', it.id, e);
+        throw e;
+      }
+    }
+  },
+
+  async removeListenItem(lang, id) {
+    if (!db || !UID || !id) return;
+    try { await deleteDoc(this._listenDoc(lang, id)); }
+    catch (e) { console.error('刪除聽力失敗', id, e); throw e; }
+  },
+
   // 一次性搬移：把舊的「共用」頂層集合 name 複製到 users/{uid}/name
   // 回傳搬移的卡片數量。以卡片 id 為 doc id，重複執行不會產生重複。
   async migrateLegacy(uid, name) {

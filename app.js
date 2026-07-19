@@ -5444,35 +5444,135 @@ function listenLangCode() {
 const WHISPER_LANG_NAME = { en: 'english', de: 'german', ja: 'japanese', fr: 'french', ko: 'korean', es: 'spanish', nl: 'dutch', ru: 'russian', vi: 'vietnamese' };
 function listenWhisperLang() { return WHISPER_LANG_NAME[listenLangCode()] || 'None'; }
 function saveListenLocal() { localStorage.setItem(nsKey(LS_LISTEN), JSON.stringify(listenItems)); }
-let listenCloudTimer = null;
-function saveListenCloud() {
-  if (!currentUid || !(window.Cloud && window.Cloud.enabled && window.Cloud.saveMeta)) return;
-  clearTimeout(listenCloudTimer);
-  listenCloudTimer = setTimeout(() => window.Cloud.saveMeta(`listen_${currentLang}`, { items: listenItems }), 1500);
-}
-function saveListen() { saveListenLocal(); saveListenCloud(); }
 
-async function syncListenFromCloud() {
-  if (listenSyncedLang === currentLang) return;
-  listenSyncedLang = currentLang;
-  if (!currentUid || !(window.Cloud && window.Cloud.enabled && window.Cloud.loadMeta)) return;
-  try {
-    const meta = await window.Cloud.loadMeta(`listen_${currentLang}`);
-    if (meta && Array.isArray(meta.items)) {
-      const map = new Map();
-      listenItems.forEach(it => map.set(it.id, it));
-      meta.items.forEach(ci => { const ex = map.get(ci.id); if (!ex || (ci.updatedAt || 0) >= (ex.updatedAt || 0)) map.set(ci.id, ci); });
-      listenItems = Array.from(map.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-      saveListenLocal();
-      if (!listenCurrentId) renderListen();
+let listenCloudTimer = null;
+let listenCloudFlushing = null;
+let listenCloudDirtyIds = new Set();
+let listenCloudRemovedIds = new Set();
+let listenCloudBoundUnload = false;
+
+function markListenCloudDirty(id) {
+  if (id) listenCloudDirtyIds.add(id);
+  else listenItems.forEach(it => { if (it?.id) listenCloudDirtyIds.add(it.id); });
+}
+
+/** 聽力寫入雲端：每則獨立文件；關鍵節點可 immediate 立刻上傳 */
+function scheduleListenCloudFlush(opts = {}) {
+  if (!currentUid || !(window.Cloud && window.Cloud.enabled)) return;
+  clearTimeout(listenCloudTimer);
+  listenCloudTimer = null;
+  if (opts.immediate) {
+    flushListenCloud();
+    return;
+  }
+  listenCloudTimer = setTimeout(() => flushListenCloud(), 500);
+}
+
+async function flushListenCloud() {
+  clearTimeout(listenCloudTimer);
+  listenCloudTimer = null;
+  if (!currentUid || !(window.Cloud && window.Cloud.enabled)) return;
+  if (listenCloudFlushing) {
+    try { await listenCloudFlushing; } catch {}
+    if (listenCloudDirtyIds.size || listenCloudRemovedIds.size) return flushListenCloud();
+    return;
+  }
+  const dirty = [...listenCloudDirtyIds];
+  const removed = [...listenCloudRemovedIds];
+  if (!dirty.length && !removed.length) return;
+  listenCloudDirtyIds.clear();
+  listenCloudRemovedIds.clear();
+
+  listenCloudFlushing = (async () => {
+    try {
+      if (window.Cloud.removeListenItem) {
+        for (const id of removed) await window.Cloud.removeListenItem(currentLang, id);
+      }
+      if (window.Cloud.upsertListenItem) {
+        for (const id of dirty) {
+          const it = listenItems.find(x => x.id === id);
+          if (!it) continue;
+          await window.Cloud.upsertListenItem(currentLang, it);
+        }
+      } else if (window.Cloud.saveMeta) {
+        // 舊版 fallback：整包 meta（可能超過 1MB）
+        await window.Cloud.saveMeta(`listen_${currentLang}`, { items: listenItems });
+      }
+    } catch (e) {
+      console.error('聽力雲端同步失敗', e);
+      dirty.forEach(id => listenCloudDirtyIds.add(id));
+      removed.forEach(id => listenCloudRemovedIds.add(id));
+      toast('聽力雲端同步失敗，稍後會再試', true);
     }
+  })();
+  try { await listenCloudFlushing; }
+  finally { listenCloudFlushing = null; }
+  if (listenCloudDirtyIds.size || listenCloudRemovedIds.size) {
+    listenCloudTimer = setTimeout(() => flushListenCloud(), 800);
+  }
+}
+
+function bindListenCloudUnload() {
+  if (listenCloudBoundUnload) return;
+  listenCloudBoundUnload = true;
+  const flush = () => { try { flushListenCloud(); } catch {} };
+  window.addEventListener('pagehide', flush);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flush();
+  });
+}
+
+/**
+ * @param {object} [opts]
+ * @param {object} [opts.item] 只標記這一則為待上傳
+ * @param {string} [opts.removeId] 雲端刪除
+ * @param {boolean} [opts.immediate] 立刻上傳（不等 debounce）
+ */
+function saveListen(opts = {}) {
+  saveListenLocal();
+  if (opts.removeId) {
+    listenCloudRemovedIds.add(opts.removeId);
+    listenCloudDirtyIds.delete(opts.removeId);
+  } else if (opts.item?.id) {
+    markListenCloudDirty(opts.item.id);
+  } else {
+    markListenCloudDirty();
+  }
+  scheduleListenCloudFlush(opts);
+}
+
+async function syncListenFromCloud(opts = {}) {
+  if (!opts.force && listenSyncedLang === currentLang) return;
+  if (!currentUid || !(window.Cloud && window.Cloud.enabled)) return;
+  try {
+    let cloudItems = null;
+    if (window.Cloud.loadListenItems) {
+      cloudItems = await window.Cloud.loadListenItems(currentLang);
+    } else if (window.Cloud.loadMeta) {
+      const meta = await window.Cloud.loadMeta(`listen_${currentLang}`);
+      cloudItems = meta && Array.isArray(meta.items) ? meta.items : [];
+    }
+    if (!Array.isArray(cloudItems)) return;
+    listenSyncedLang = currentLang;
+    const map = new Map();
+    listenItems.forEach(it => map.set(it.id, it));
+    cloudItems.forEach(ci => {
+      if (!ci?.id) return;
+      const ex = map.get(ci.id);
+      if (!ex || (ci.updatedAt || 0) >= (ex.updatedAt || 0)) map.set(ci.id, ci);
+    });
+    listenItems = Array.from(map.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    saveListenLocal();
+    renderListen();
   } catch (e) { console.error('讀取聽力雲端資料失敗', e); }
 }
 
 function openListen() {
+  bindListenCloudUnload();
   listenItems = loadJSON(nsKey(LS_LISTEN), []);
   renderListen();
-  syncListenFromCloud();
+  // 每次進入聽力頁都強制拉雲端，手機才看得到電腦剛處理完的結果
+  syncListenFromCloud({ force: true });
   checkListenBackend();
 }
 
@@ -5711,7 +5811,7 @@ function updateListenQueueHint() {
   el.hidden = false;
   el.textContent = `批次處理中：進行 ${active}、佇列 ${pending}`
     + (listenJobsDone || listenJobsFail ? `（已完成 ${listenJobsDone}${listenJobsFail ? '／失敗 ' + listenJobsFail : ''}）` : '')
-    + ' — 可離開此頁以外的分頁，但請勿關閉網站';
+    + ' — 可切換分頁；每則完成會立刻同步雲端，手機重新整理聽力頁即可看到';
 }
 
 function pumpListenJobQueue() {
@@ -5764,7 +5864,8 @@ async function listenAfterTranscribe(item, opts = {}) {
   const quiet = !!opts.quiet;
   const showStage = (txt) => setListenProgress(txt);
   item.status = 'translating';
-  saveListen();
+  item.updatedAt = now();
+  saveListen({ item, immediate: true });
   if (listenCurrentId === item.id) renderListenItem(item); // 先顯示英文與播放器＋右側欄位骨架
   else renderListenList();
   try {
@@ -5772,7 +5873,7 @@ async function listenAfterTranscribe(item, opts = {}) {
     else await translateListenBrowser(item, showStage);
     await analyzeListen(item, showStage);
     item.status = 'done'; item.updatedAt = now();
-    saveListen();
+    saveListen({ item, immediate: true });
     if (listenCurrentId === item.id) renderListenItem(item);
     renderListenList();
     if (!quiet) toast('聽力精聽整理完成');
@@ -5874,7 +5975,8 @@ async function translateListenBrowser(item, showStage) {
     }));
     saveListenLocal();
   }
-  saveListenLocal();
+  item.updatedAt = now();
+  saveListen({ item, immediate: true });
 }
 
 /** Gemini 翻譯整篇（品質較好、較慢／耗額度） */
@@ -5893,6 +5995,8 @@ async function translateListenGemini(item, showStage) {
     } catch (e) { console.error('Gemini 翻譯失敗', e); }
     saveListenLocal();
   }
+  item.updatedAt = now();
+  saveListen({ item, immediate: true });
 }
 
 /** 使用者按「Gemini 翻譯」：整篇重翻 */
@@ -5985,7 +6089,7 @@ async function listenForceCc(item) {
   };
   const prevStatus = item.status;
   item.status = 'processing';
-  saveListen();
+  saveListen({ item, immediate: true });
   if (listenCurrentId === item.id) renderListenItem(item);
   try {
     showStage('抓取 YouTube CC 字幕中…');
@@ -6008,7 +6112,7 @@ async function listenForceCc(item) {
     item.captionsSentenceMerged = true;
     item.summary = ''; item.vocab = []; item.phrases = []; item.grammar = []; item.mindmap = null;
     item.updatedAt = now();
-    saveListen();
+    saveListen({ item, immediate: true });
     if (listenCurrentId === item.id) {
       const tEl = $('#listenTitle'); if (tEl && item.title) tEl.textContent = item.title;
       renderListenItem(item);
@@ -6017,7 +6121,8 @@ async function listenForceCc(item) {
     await listenAfterTranscribe(item);
   } catch (e) {
     item.status = prevStatus === 'done' ? 'done' : 'error';
-    saveListen();
+    item.updatedAt = now();
+    saveListen({ item, immediate: true });
     if (listenCurrentId === item.id) renderListenItem(item);
     toast('CC 字幕失敗：' + e.message, true);
   } finally {
@@ -6047,7 +6152,7 @@ async function listenForceWhisper(item) {
   };
   const prevStatus = item.status;
   item.status = 'processing';
-  saveListen();
+  saveListen({ item, immediate: true });
   if (listenCurrentId === item.id) renderListenItem(item);
   try {
     showStage('下載音訊並 Whisper 掃描中…');
@@ -6064,7 +6169,7 @@ async function listenForceWhisper(item) {
     item.captionsDeduped = true;
     item.summary = ''; item.vocab = []; item.phrases = []; item.grammar = []; item.mindmap = null;
     item.updatedAt = now();
-    saveListen();
+    saveListen({ item, immediate: true });
     if (listenCurrentId === item.id) {
       const tEl = $('#listenTitle'); if (tEl && item.title) tEl.textContent = item.title;
       renderListenItem(item);
@@ -6073,7 +6178,8 @@ async function listenForceWhisper(item) {
     await listenAfterTranscribe(item);
   } catch (e) {
     item.status = prevStatus === 'done' ? 'done' : 'error';
-    saveListen();
+    item.updatedAt = now();
+    saveListen({ item, immediate: true });
     if (listenCurrentId === item.id) renderListenItem(item);
     toast('Whisper 掃描失敗：' + e.message, true);
   } finally {
@@ -6102,7 +6208,7 @@ async function listenUploadFile(file, opts = {}) {
     segments: [], vocab: [], phrases: [], grammar: [], summary: '',
   };
   listenItems.unshift(item);
-  saveListen();
+  saveListen({ item, immediate: true });
   if (open) { listenCurrentId = item.id; renderListen(); }
   else renderListenList();
   try {
@@ -6117,11 +6223,13 @@ async function listenUploadFile(file, opts = {}) {
     item.mediaType = j.mediaType || item.mediaType;
     item.segments = mapListenCaptionSegments(j.segments || [], { dedupe: false });
     item.captionsDeduped = true;
-    saveListen();
+    item.updatedAt = now();
+    saveListen({ item, immediate: true });
     setHint('');
     await listenAfterTranscribe(item, { quiet });
   } catch (e) {
-    item.status = 'error'; saveListen();
+    item.status = 'error'; item.updatedAt = now();
+    saveListen({ item, immediate: true });
     if (listenCurrentId === item.id) renderListenItem(item);
     renderListenList();
     setHint('');
@@ -6146,7 +6254,7 @@ async function listenAddYoutube(url, opts = {}) {
     translatePrefer, forceWhisper,
   };
   listenItems.unshift(item);
-  saveListen();
+  saveListen({ item, immediate: true });
   if (open) { listenCurrentId = item.id; renderListen(); }
   else renderListenList();
   try {
@@ -6176,7 +6284,8 @@ async function listenAddYoutube(url, opts = {}) {
     item.segments = mapListenCaptionSegments(j.segments || [], { dedupe: isCc || !forceWhisper });
     item.captionsDeduped = true;
     item.captionsSentenceMerged = true;
-    saveListen();
+    item.updatedAt = now();
+    saveListen({ item, immediate: true });
     renderListenList();
     setHint('');
     const src = j.captionSource;
@@ -6187,7 +6296,8 @@ async function listenAddYoutube(url, opts = {}) {
     }
     await listenAfterTranscribe(item, { quiet });
   } catch (e) {
-    item.status = 'error'; saveListen();
+    item.status = 'error'; item.updatedAt = now();
+    saveListen({ item, immediate: true });
     if (listenCurrentId === item.id) renderListenItem(item);
     renderListenList();
     setHint('');
@@ -6303,6 +6413,8 @@ async function analyzeListen(item, showStage) {
   } catch (e) { console.error('聽力心智圖失敗', e); }
 
   saveListenLocal();
+  item.updatedAt = now();
+  saveListen({ item, immediate: true });
 }
 
 async function generateListenMindmap(segments) {
@@ -6913,8 +7025,11 @@ function bindListen() {
   $('#listenDeleteBtn')?.addEventListener('click', () => {
     const it = listenItems.find(i => i.id === listenCurrentId); if (!it) return;
     if (!confirm(`確定刪除「${it.title}」？`)) return;
-    listenItems = listenItems.filter(i => i.id !== it.id);
-    listenStopPlayer(); listenCurrentId = null; saveListen(); renderListen();
+    const removedId = it.id;
+    listenItems = listenItems.filter(i => i.id !== removedId);
+    listenStopPlayer(); listenCurrentId = null;
+    saveListen({ removeId: removedId, immediate: true });
+    renderListen();
   });
   $('#listenList')?.addEventListener('click', e => {
     const b = e.target.closest('[data-listen]');
