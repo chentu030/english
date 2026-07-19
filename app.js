@@ -17,6 +17,8 @@ const LS_DAILY_HIST = 'vocab_daily_hist_v1'; // { 'YYYY-MM-DD': 翻閱張數 }
 const LS_LANG = 'vocab_lang_v1';
 const LS_READER = 'vocab_reader_v1'; // 閱讀書架（每語言、每使用者分開）
 const LS_LISTEN = 'vocab_listen_v1'; // 聽力清單（每語言、每使用者分開）
+const LS_LAST_UI = 'vocab_last_ui_v1'; // 上次開啟的頁面／文章／聽力
+const LAST_UI_VIEWS = ['deck', 'add', 'batch', 'study', 'reader', 'listen', 'settings'];
 
 // 計入每日目標的模式（中英、克漏字為主）
 const DAILY_MODES = ['en2zh', 'zh2en', 'spelling'];
@@ -772,9 +774,13 @@ function init() {
   renderDeck();
   renderModeGrid();
 
-  // 需要登入才能使用；等 Auth 模組載入後由登入狀態驅動資料載入
+  // 需要登入才能使用；等 Auth 模組載入後由登入狀態驅動資料載入與還原上次頁面
   if (window.Auth) bindAuth();
-  else window.addEventListener('cloud-ready', () => bindAuth(), { once: true });
+  else {
+    window.addEventListener('cloud-ready', () => bindAuth(), { once: true });
+    // 無 Auth 模組時仍還原頁面
+    restoreLastUi();
+  }
 }
 
 /* ---------------------- Google 登入（必須登入） ---------------------- */
@@ -796,6 +802,7 @@ function bindAuth() {
     showGate(false);
     if (topBtn) topBtn.style.display = 'none';
     if (window.Cloud && window.Cloud.enabled) startCloud();
+    restoreLastUi();
     return;
   }
   if (authBound) return;
@@ -848,6 +855,7 @@ async function onAuthChanged(u) {
   if (window.Cloud && window.Cloud.enabled) startCloud();
   syncHistory();
   showGate(false);
+  restoreLastUi();
 }
 
 // 重新載入目前使用者 + 目前語言的本機資料
@@ -1022,7 +1030,60 @@ function newSrsState() {
 /* =========================================================================
    導覽 / 主題
    ========================================================================= */
+function loadLastUi() {
+  try { return JSON.parse(localStorage.getItem(LS_LAST_UI) || '{}') || {}; }
+  catch { return {}; }
+}
+function saveLastUi(patch = {}) {
+  const cur = loadLastUi();
+  const next = {
+    ...cur,
+    ...patch,
+    lang: currentLang,
+    view: patch.view || cur.view || 'deck',
+    readerBookId: patch.readerBookId !== undefined ? patch.readerBookId : (readerCurrentBookId || null),
+    readerTocId: patch.readerTocId !== undefined ? patch.readerTocId : (readerCurrentTocId || null),
+    listenId: patch.listenId !== undefined ? patch.listenId : (listenCurrentId || null),
+  };
+  try { localStorage.setItem(LS_LAST_UI, JSON.stringify(next)); } catch {}
+}
+function touchLastUi(viewName) {
+  const active = document.querySelector('.view.active');
+  const view = viewName || active?.id?.replace(/^view-/, '') || 'deck';
+  saveLastUi({
+    view,
+    readerBookId: readerCurrentBookId || null,
+    readerTocId: readerCurrentTocId || null,
+    listenId: listenCurrentId || null,
+  });
+}
+
+let didRestoreLastUi = false;
+/** 重新整理／重開後回到上次頁面（含閱讀文章、聽力項目） */
+function restoreLastUi() {
+  if (didRestoreLastUi) return;
+  didRestoreLastUi = true;
+  const ui = loadLastUi();
+  let name = LAST_UI_VIEWS.includes(ui.view) ? ui.view : 'deck';
+  // 僅在同一語言下還原閱讀／聽力細節
+  if (!ui.lang || ui.lang === currentLang) {
+    if (name === 'reader' && ui.readerBookId && readerBooks.some(b => b.id === ui.readerBookId)) {
+      readerCurrentBookId = ui.readerBookId;
+      const book = readerBooks.find(b => b.id === ui.readerBookId);
+      if (ui.readerTocId && book?.toc?.some(t => t.id === ui.readerTocId) && book.articles?.[ui.readerTocId]) {
+        readerCurrentTocId = ui.readerTocId;
+      }
+    }
+    if (name === 'listen' && ui.listenId && listenItems.some(i => i.id === ui.listenId)) {
+      listenCurrentId = ui.listenId;
+    }
+  }
+  if (!$('#view-' + name)) name = 'deck';
+  showView(name);
+}
+
 function showView(name) {
+  if (!$('#view-' + name)) name = 'deck';
   $$('.view').forEach(v => v.classList.remove('active'));
   $('#view-' + name).classList.add('active');
   $$('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === name));
@@ -1034,6 +1095,7 @@ function showView(name) {
   if (name === 'study') { renderModeGrid(); renderFolderSelects(); resetStudyToSetup(); }
   if (name === 'reader') openReader();
   if (name === 'listen') openListen();
+  touchLastUi(name);
 }
 
 function bindNav() {
@@ -3299,6 +3361,7 @@ function renderReader() {
     lib.hidden = false; bk.hidden = true;
     renderBookList();
   }
+  touchLastUi('reader');
 }
 
 function renderBookList() {
@@ -4030,6 +4093,7 @@ async function readerPlayAI(book, a) {
 function openArticle(book, toc) {
   readerCurrentTocId = toc.id;
   renderBook(book); // 更新目錄 active 狀態
+  touchLastUi('reader');
   const existing = book.articles && book.articles[toc.id];
   if (existing) { renderArticle(book, existing); return; }
   processArticle(book, toc);
@@ -4768,15 +4832,16 @@ function addListenSideVocab(word, exampleEn, exampleStart) {
     saveListen();
     const box = $('#lsVocabList');
     if (box) {
-      box.innerHTML = sideVocabHtml(item.vocab, { jumpable: true });
+      box.innerHTML = sideVocabHtml(item.vocab, { jumpable: true, editing: listenEditingSide === 'vocab' });
     } else if (listenCurrentId === item.id) {
       renderListenItem(item);
     }
+    refreshListenTranscriptMarks(item);
     toast(`已加入「${word}」`);
     enrichSideVocabMeaning(item, word, () => {
       saveListen();
       const b = $('#lsVocabList');
-      if (b) b.innerHTML = sideVocabHtml(item.vocab, { jumpable: true });
+      if (b) b.innerHTML = sideVocabHtml(item.vocab, { jumpable: true, editing: listenEditingSide === 'vocab' });
       scrollListenVocabIntoView(word);
     });
   } else {
@@ -5256,6 +5321,7 @@ function renderListen() {
   if (!lib || !box) return;
   if (item) { lib.hidden = true; box.hidden = false; renderListenItem(item); }
   else { listenStopPlayer(); lib.hidden = false; box.hidden = true; renderListenList(); }
+  touchLastUi('listen');
 }
 
 function renderListenList() {
