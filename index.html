@@ -324,6 +324,7 @@
             <div class="listen-transcript-head">
               <span>📝 逐字稿（點句子跳轉・雙擊單字加入右側）</span>
               <span class="lth-tools">
+                <button class="btn ghost small" id="listenExportBtn" type="button" title="匯出逐字稿／字幕">⬇ 匯出字幕</button>
                 <button class="btn ghost small" id="listenToggleZh" type="button" title="隱藏／顯示中文翻譯">隱藏中文</button>
                 <button class="btn ghost small" id="listenCcRescan" type="button" title="改回使用 YouTube CC／自動字幕">📄 CC 字幕</button>
                 <button class="btn ghost small" id="listenWhisperRescan" type="button" title="改下載音訊用 Whisper 掃描（時間軸較準）">🎙 Whisper</button>
@@ -510,6 +511,53 @@
         <div class="add-btns">
           <button class="btn primary" id="lytConfirm" type="button">加入佇列並處理</button>
           <button class="btn ghost" data-close-lyt type="button">取消</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== 匯出聽力字幕 ===================== -->
+  <div id="listenExportModal" class="modal" hidden>
+    <div class="modal-overlay" data-close-lex></div>
+    <div class="modal-box" role="dialog" aria-modal="true" style="max-width:480px">
+      <div class="modal-header">
+        <span class="modal-title">匯出逐字稿／字幕</span>
+        <div class="modal-actions">
+          <button class="modal-close" title="關閉" data-close-lex>✕</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <p class="hint" id="lexHint" style="margin-top:0">預設只匯出原文（CC／Whisper）。可再勾選中文與時間戳。</p>
+        <fieldset class="lyt-opts">
+          <legend>內容</legend>
+          <label class="lyt-opt">
+            <input type="checkbox" id="lexZh" />
+            <span><b>加上中文翻譯</b><small>每一句英文下方附中文（沒有翻譯的句子會略過中文行）</small></span>
+          </label>
+          <label class="lyt-opt" id="lexTsWrap">
+            <input type="checkbox" id="lexTs" />
+            <span><b>加上時間戳</b><small>純文字會標 [分:秒]；字幕格式本來就有時間軸</small></span>
+          </label>
+        </fieldset>
+        <fieldset class="lyt-opts">
+          <legend>格式</legend>
+          <label class="lyt-opt">
+            <input type="radio" name="lexFmt" value="txt" checked />
+            <span><b>純文字 (.txt)</b><small>方便閱讀、貼到筆記</small></span>
+          </label>
+          <label class="lyt-opt">
+            <input type="radio" name="lexFmt" value="srt" />
+            <span><b>SubRip (.srt)</b><small>常用影片字幕格式</small></span>
+          </label>
+          <label class="lyt-opt">
+            <input type="radio" name="lexFmt" value="vtt" />
+            <span><b>WebVTT (.vtt)</b><small>網頁／部分播放器字幕</small></span>
+          </label>
+        </fieldset>
+        <div class="add-btns">
+          <button class="btn primary" id="lexDownload" type="button">下載檔案</button>
+          <button class="btn ghost" id="lexCopy" type="button">複製到剪貼簿</button>
+          <button class="btn ghost" data-close-lex type="button">取消</button>
         </div>
       </div>
     </div>

@@ -6640,6 +6640,193 @@ function fmtTime(sec) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+/** 字幕時間：SRT 用逗號、VTT 用句點 */
+function fmtSubTime(sec, sep = ',') {
+  const t = Math.max(0, Number(sec) || 0);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const s = Math.floor(t % 60);
+  const ms = Math.round((t - Math.floor(t)) * 1000);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}${sep}${String(ms).padStart(3, '0')}`;
+}
+
+function listenSegEnd(segs, i) {
+  const s = segs[i] || {};
+  let end = Number(s.end);
+  if (!(end > 0) || end <= (Number(s.start) || 0)) {
+    const next = segs[i + 1];
+    end = next && next.start != null ? Number(next.start) : (Number(s.start) || 0) + 2;
+  }
+  if (end <= (Number(s.start) || 0)) end = (Number(s.start) || 0) + 0.5;
+  return end;
+}
+
+function safeListenFilename(title) {
+  return String(title || 'transcript')
+    .replace(/[\\/:*?"<>|]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80) || 'transcript';
+}
+
+function buildListenExportText(item, opts = {}) {
+  const segs = (item && item.segments) || [];
+  const withZh = !!opts.zh;
+  const withTs = !!opts.ts;
+  const fmt = opts.fmt || 'txt';
+
+  if (fmt === 'srt' || fmt === 'vtt') {
+    const lines = [];
+    if (fmt === 'vtt') lines.push('WEBVTT', '');
+    let n = 0;
+    segs.forEach((s, i) => {
+      const en = String(s.en || '').trim();
+      const zh = String(s.zh || '').trim();
+      if (!en && !(withZh && zh)) return;
+      n += 1;
+      const start = Number(s.start) || 0;
+      const end = listenSegEnd(segs, i);
+      const sep = fmt === 'vtt' ? '.' : ',';
+      if (fmt === 'srt') lines.push(String(n));
+      lines.push(`${fmtSubTime(start, sep)} --> ${fmtSubTime(end, sep)}`);
+      if (en) lines.push(en);
+      if (withZh && zh) lines.push(zh);
+      lines.push('');
+    });
+    return lines.join('\n').replace(/\n+$/, '\n');
+  }
+
+  // 純文字
+  const blocks = [];
+  segs.forEach((s) => {
+    const en = String(s.en || '').trim();
+    const zh = String(s.zh || '').trim();
+    if (!en && !(withZh && zh)) return;
+    const prefix = withTs ? `[${fmtTime(s.start)}] ` : '';
+    const parts = [];
+    if (en) parts.push(prefix + en);
+    else if (withTs) parts.push(prefix.trim());
+    if (withZh && zh) parts.push(zh);
+    blocks.push(parts.join('\n'));
+  });
+  return blocks.join('\n\n') + (blocks.length ? '\n' : '');
+}
+
+function downloadTextFile(filename, text, mime = 'text/plain;charset=utf-8') {
+  const blob = new Blob([text], { type: mime });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800);
+}
+
+function openListenExportModal() {
+  const item = listenItems.find(i => i.id === listenCurrentId);
+  if (!item) return;
+  if (!(item.segments || []).length) {
+    toast('目前還沒有逐字稿可匯出', true);
+    return;
+  }
+  const modal = $('#listenExportModal');
+  if (!modal) return;
+  const zhEl = $('#lexZh');
+  const tsEl = $('#lexTs');
+  const hasZh = (item.segments || []).some(s => (s.zh || '').trim());
+  if (zhEl) {
+    zhEl.checked = false;
+    zhEl.disabled = !hasZh;
+  }
+  if (tsEl) tsEl.checked = false;
+  const txt = document.querySelector('input[name="lexFmt"][value="txt"]');
+  if (txt) txt.checked = true;
+  const hint = $('#lexHint');
+  if (hint) {
+    const src = item.captionSource === 'manual' ? '人工 CC'
+      : item.captionSource === 'auto' ? '自動 CC'
+      : item.captionSource === 'whisper' ? 'Whisper'
+      : '逐字稿';
+    hint.textContent = `「${item.title}」· ${item.segments.length} 句 · 來源 ${src}`
+      + (hasZh ? '' : '（尚無中文翻譯，無法勾選中文）');
+  }
+  syncListenExportTsUi();
+  modal.hidden = false;
+  document.body.classList.add('modal-open');
+}
+
+function closeListenExportModal() {
+  const modal = $('#listenExportModal');
+  if (modal) modal.hidden = true;
+  document.body.classList.remove('modal-open');
+}
+
+function syncListenExportTsUi() {
+  const fmt = document.querySelector('input[name="lexFmt"]:checked')?.value || 'txt';
+  const tsEl = $('#lexTs');
+  const wrap = $('#lexTsWrap');
+  if (!tsEl) return;
+  if (fmt === 'srt' || fmt === 'vtt') {
+    tsEl.checked = true;
+    tsEl.disabled = true;
+    if (wrap) wrap.style.opacity = '0.65';
+  } else {
+    tsEl.disabled = false;
+    if (wrap) wrap.style.opacity = '';
+  }
+}
+
+function getListenExportOpts() {
+  const fmt = document.querySelector('input[name="lexFmt"]:checked')?.value || 'txt';
+  return {
+    zh: !!$('#lexZh')?.checked,
+    ts: fmt === 'srt' || fmt === 'vtt' ? true : !!$('#lexTs')?.checked,
+    fmt,
+  };
+}
+
+async function doListenExport(mode) {
+  const item = listenItems.find(i => i.id === listenCurrentId);
+  if (!item || !(item.segments || []).length) {
+    toast('目前還沒有逐字稿可匯出', true);
+    return;
+  }
+  const opts = getListenExportOpts();
+  if (opts.zh && !(item.segments || []).some(s => (s.zh || '').trim())) {
+    toast('還沒有中文翻譯，請先翻譯或取消勾選中文', true);
+    return;
+  }
+  const text = buildListenExportText(item, opts);
+  if (!text.trim()) {
+    toast('沒有可匯出的內容', true);
+    return;
+  }
+  const base = safeListenFilename(item.title);
+  const tag = [
+    'en',
+    opts.zh ? 'zh' : '',
+    (opts.ts || opts.fmt !== 'txt') ? 'timed' : '',
+  ].filter(Boolean).join('-');
+  const ext = opts.fmt === 'srt' ? 'srt' : opts.fmt === 'vtt' ? 'vtt' : 'txt';
+  const mime = opts.fmt === 'srt' ? 'application/x-subrip;charset=utf-8'
+    : opts.fmt === 'vtt' ? 'text/vtt;charset=utf-8'
+    : 'text/plain;charset=utf-8';
+
+  if (mode === 'copy') {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('已複製到剪貼簿');
+      closeListenExportModal();
+    } catch {
+      toast('複製失敗，請改用下載', true);
+    }
+    return;
+  }
+  downloadTextFile(`${base}.${tag}.${ext}`, text, mime);
+  toast(`已下載 ${ext.toUpperCase()}`);
+  closeListenExportModal();
+}
+
 function renderListenItem(item) {
   ensureListenCaptionsClean(item);
   $('#listenTitle').textContent = item.title;
@@ -7013,8 +7200,18 @@ function bindListen() {
   $('#lytUrl')?.addEventListener('keydown', e => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); confirmListenYoutubeModal(); }
   });
+  $('#listenExportBtn')?.addEventListener('click', openListenExportModal);
+  $('#lexDownload')?.addEventListener('click', () => doListenExport('download'));
+  $('#lexCopy')?.addEventListener('click', () => doListenExport('copy'));
+  $('#listenExportModal')?.addEventListener('click', e => {
+    if (e.target.closest('[data-close-lex]')) closeListenExportModal();
+  });
+  document.querySelectorAll('input[name="lexFmt"]').forEach(el => {
+    el.addEventListener('change', syncListenExportTsUi);
+  });
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && $('#listenYoutubeModal') && !$('#listenYoutubeModal').hidden) closeListenYoutubeModal();
+    if (e.key === 'Escape' && $('#listenExportModal') && !$('#listenExportModal').hidden) closeListenExportModal();
   });
   $('#listenBackBtn')?.addEventListener('click', () => { listenStopPlayer(); listenCurrentId = null; renderListen(); });
   $('#listenRenameBtn')?.addEventListener('click', () => {
