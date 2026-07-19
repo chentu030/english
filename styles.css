@@ -1074,6 +1074,9 @@ body:has(#view-reader.active #readerBook:not([hidden])) .container {
 .rd-vex.ls-jump, .rd-vex.rd-jump {
   cursor: pointer;
   border-radius: 6px;
+  /* 左側留空給 hover 藍條，避免蓋住文字前端 */
+  padding-left: 10px;
+  margin-left: -10px;
   transition: background .15s ease, box-shadow .15s ease;
 }
 .rd-vitem.ls-jump:hover, .rd-vitem.rd-jump:hover,
@@ -1380,6 +1383,8 @@ html.hide-zh .ls-zh { display: none !important; }
 .rd-vitem-flash {
   animation: rdVitemFlash 1.4s ease;
   border-radius: 6px;
+  padding-left: 10px;
+  margin-left: -10px;
 }
 @keyframes rdVitemFlash {
   0%, 100% { background: transparent; }
