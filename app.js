@@ -4300,18 +4300,54 @@ function addReaderSideVocab(word, exampleEn, examplePi) {
     book.updatedAt = now();
     saveReader();
     const box = $('#rdVocabList');
-    if (box) box.innerHTML = sideVocabHtml(a.vocab, { jumpable: 'para' });
+    if (box) box.innerHTML = sideVocabHtml(a.vocab, { jumpable: 'para', editing: readerEditingSide === 'vocab' });
+    refreshReaderArticleMarks(a);
     toast(`已加入「${word}」`);
     enrichSideVocabMeaning(a, word, () => {
       saveReader();
       const b = $('#rdVocabList');
-      if (b) b.innerHTML = sideVocabHtml(a.vocab, { jumpable: 'para' });
+      if (b) b.innerHTML = sideVocabHtml(a.vocab, { jumpable: 'para', editing: readerEditingSide === 'vocab' });
       scrollReaderVocabIntoView(word);
     });
   } else {
     toast(`「${word}」已在重要單字`);
   }
   scrollReaderVocabIntoView(word);
+}
+
+/** 只重畫正文綠螢光／片語標示，不整頁重渲（保留捲動位置） */
+function refreshReaderArticleMarks(a) {
+  if (!a) return;
+  const re = buildKnownWordRegex();
+  const paras = a.paragraphs || [];
+  document.querySelectorAll('#readerArticle .rd-para[data-pi]').forEach(para => {
+    const pi = parseInt(para.dataset.pi, 10);
+    const p = paras[pi];
+    if (!p) return;
+    const enEl = para.querySelector('.rd-en');
+    if (!enEl) return;
+    const extras = [...enEl.querySelectorAll('.speak-btn, .rd-para-ai, .rd-para-spk')];
+    const extraHtml = extras.map(n => n.outerHTML).join('');
+    enEl.innerHTML = highlightArticleEn(p.en || '', {
+      vocab: a.vocab, phrases: a.phrases, patterns: a.patterns, knownRe: re,
+    }) + (extraHtml ? ` ${extraHtml}` : '');
+  });
+}
+
+function refreshListenTranscriptMarks(item) {
+  if (!item) return;
+  const re = buildKnownWordRegex();
+  const segs = item.segments || [];
+  document.querySelectorAll('#listenTranscript .ls-seg[data-i]').forEach(seg => {
+    const i = parseInt(seg.dataset.i, 10);
+    const s = segs[i];
+    if (!s) return;
+    const enEl = seg.querySelector('.ls-en');
+    if (!enEl) return;
+    enEl.innerHTML = highlightArticleEn(s.en || '', {
+      vocab: item.vocab, phrases: item.phrases, grammar: item.grammar, knownRe: re,
+    });
+  });
 }
 
 /** 右側欄滾到指定項目並暫時高亮 */
