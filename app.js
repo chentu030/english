@@ -1036,36 +1036,72 @@ function loadLastUi() {
 }
 function saveLastUi(patch = {}) {
   const cur = loadLastUi();
-  const next = {
-    ...cur,
-    ...patch,
-    lang: currentLang,
-    view: patch.view || cur.view || 'deck',
-    readerBookId: patch.readerBookId !== undefined ? patch.readerBookId : (readerCurrentBookId || null),
-    readerTocId: patch.readerTocId !== undefined ? patch.readerTocId : (readerCurrentTocId || null),
-    listenId: patch.listenId !== undefined ? patch.listenId : (listenCurrentId || null),
-  };
+  const next = { ...cur, ...patch, lang: currentLang };
+  if (next.view == null) next.view = cur.view || 'deck';
   try { localStorage.setItem(LS_LAST_UI, JSON.stringify(next)); } catch {}
 }
 function touchLastUi(viewName) {
   const active = document.querySelector('.view.active');
   const view = viewName || active?.id?.replace(/^view-/, '') || 'deck';
-  saveLastUi({
+  const patch = {
     view,
     readerBookId: readerCurrentBookId || null,
     readerTocId: readerCurrentTocId || null,
     listenId: listenCurrentId || null,
-  });
+    modalCardId: (modalCardId && $('#cardModal') && !$('#cardModal').hidden) ? modalCardId : null,
+    modalEditing: !!(modalCardId && $('#modalEditBtn')?.dataset?.editing === '1'),
+    editCardId: null,
+    addDraft: null,
+    studySession: null,
+    studySetup: null,
+  };
+
+  // 新增／編輯頁
+  if (view === 'add') {
+    if (currentEntry?.card?.id) {
+      patch.editCardId = currentEntry.card.id;
+    } else {
+      patch.addDraft = {
+        word: $('#wordInput')?.value || '',
+        raw: $('#rawInput')?.value || '',
+        hint: $('#addHint')?.textContent || '',
+      };
+    }
+  }
+
+  // 背誦：進行中的佇列，或設定頁選項
+  if (session?.queue?.length && $('#studyCard') && !$('#studyCard').hidden) {
+    patch.studySession = {
+      queue: session.queue,
+      idx: session.idx,
+      reviewed: session.reviewed,
+      total: session.total,
+      results: session.results || [],
+      modes: session.modes || [],
+      scope: session.scope || 'due',
+      answerShown: !$('#rateBtns')?.hidden,
+    };
+  } else if (view === 'study' && $('#studySetup') && !$('#studySetup').hidden) {
+    patch.studySetup = {
+      modes: (typeof getSelectedModes === 'function') ? getSelectedModes() : [],
+      scope: document.querySelector('input[name="scope"]:checked')?.value || 'due',
+      limit: $('#studyLimit')?.value || '',
+      folder: $('#studyFolder')?.value || '',
+    };
+  }
+
+  saveLastUi(patch);
 }
 
 let didRestoreLastUi = false;
-/** 重新整理／重開後回到上次頁面（含閱讀文章、聽力項目） */
+/** 重新整理／重開後回到上次任務（頁面、背誦進度、編輯中字卡等） */
 function restoreLastUi() {
   if (didRestoreLastUi) return;
   didRestoreLastUi = true;
   const ui = loadLastUi();
   let name = LAST_UI_VIEWS.includes(ui.view) ? ui.view : 'deck';
-  // 僅在同一語言下還原閱讀／聽力細節
+  if (!$('#view-' + name)) name = 'deck';
+
   if (!ui.lang || ui.lang === currentLang) {
     if (name === 'reader' && ui.readerBookId && readerBooks.some(b => b.id === ui.readerBookId)) {
       readerCurrentBookId = ui.readerBookId;
@@ -1078,24 +1114,127 @@ function restoreLastUi() {
       listenCurrentId = ui.listenId;
     }
   }
-  if (!$('#view-' + name)) name = 'deck';
-  showView(name);
+
+  showView(name, { restoring: true });
+
+  if (!ui.lang || ui.lang === currentLang) {
+    if (name === 'study') {
+      if (ui.studySession?.queue?.length) {
+        if (!resumeStudySession(ui.studySession) && ui.studySetup) applyStudySetup(ui.studySetup);
+      } else if (ui.studySetup) {
+        applyStudySetup(ui.studySetup);
+      }
+    }
+    if (name === 'add') {
+      if (ui.editCardId && cards.some(c => c.id === ui.editCardId)) {
+        editCardFull(ui.editCardId);
+      } else if (ui.addDraft) {
+        restoreAddDraft(ui.addDraft);
+      }
+    }
+    if (ui.modalCardId && cards.some(c => c.id === ui.modalCardId)) {
+      openCardDetail(ui.modalCardId);
+      if (ui.modalEditing) {
+        const btn = $('#modalEditBtn');
+        if (btn && btn.dataset.editing !== '1') btn.click();
+      }
+    }
+  }
+  // 還原完成後再寫回一次，避免中途被清空
+  touchLastUi(name);
 }
 
-function showView(name) {
+function applyStudySetup(setup) {
+  if (!setup) return;
+  renderModeGrid();
+  const modes = setup.modes || [];
+  $$('#modeGrid .mode-item input').forEach(inp => {
+    inp.checked = modes.includes(inp.value);
+    inp.closest('.mode-item')?.classList.toggle('on', inp.checked);
+  });
+  const scopeEl = document.querySelector(`input[name="scope"][value="${setup.scope || 'due'}"]`);
+  if (scopeEl) scopeEl.checked = true;
+  if ($('#studyLimit') && setup.limit != null) $('#studyLimit').value = setup.limit;
+  if ($('#studyFolder') && setup.folder != null) $('#studyFolder').value = setup.folder;
+  touchLastUi('study');
+}
+
+function resumeStudySession(saved) {
+  const queue = (saved.queue || []).filter(q => q && cards.some(c => c.id === q.cardId));
+  if (!queue.length) {
+    resetStudyToSetup();
+    return false;
+  }
+  let idx = Number(saved.idx) || 0;
+  if (idx < 0) idx = 0;
+  if (idx >= queue.length) idx = queue.length - 1;
+  session = {
+    queue,
+    idx,
+    reviewed: Math.min(Number(saved.reviewed) || 0, queue.length),
+    total: Math.max(Number(saved.total) || queue.length, queue.length),
+    results: Array.isArray(saved.results) ? saved.results : [],
+    modes: saved.modes || [],
+    scope: saved.scope || 'due',
+  };
+  $('#studySetup').hidden = true;
+  $('#studyDone').hidden = true;
+  $('#studyCard').hidden = false;
+  showCurrentCard({ skipSpeech: true, answerShown: !!saved.answerShown });
+  touchLastUi('study');
+  return true;
+}
+
+function restoreAddDraft(draft) {
+  if (!draft) return;
+  if ($('#wordInput')) $('#wordInput').value = draft.word || '';
+  if ($('#rawInput')) $('#rawInput').value = draft.raw || '';
+  if ($('#addHint') && draft.hint) $('#addHint').textContent = draft.hint;
+  $('#saveCardBtn').hidden = true;
+  pendingCard = null;
+  currentEntry = null;
+  if ($('#previewArea')) {
+    $('#previewArea').innerHTML = '<div class="empty-state small"><p class="empty-sub">整理結果會顯示在這裡</p></div>';
+  }
+}
+
+function showView(name, opts = {}) {
   if (!$('#view-' + name)) name = 'deck';
   $$('.view').forEach(v => v.classList.remove('active'));
   $('#view-' + name).classList.add('active');
   $$('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === name));
-  // 閱讀／聽力頁需要更寬的版面（左右對照），其餘頁維持置中窄版
   document.querySelector('.container')?.classList.toggle('wide', name === 'reader' || name === 'listen');
-  if (name === 'add') currentEntry = null; // 進入新增頁預設不綁定任何已存卡片
+
+  if (name === 'add' && !opts.restoring && !opts.keepAdd) {
+    // 一般切到新增頁才清空；還原／進入編輯模式時保留
+    if (!currentEntry?.card) currentEntry = null;
+  }
   if (name === 'deck') { renderFolderSelects(); renderDailyPanel(); renderDeck(); }
   if (name === 'batch') renderBatch();
-  if (name === 'study') { renderModeGrid(); renderFolderSelects(); resetStudyToSetup(); }
+  if (name === 'study') {
+    renderModeGrid();
+    renderFolderSelects();
+    if (opts.restoring) {
+      // 還原流程稍後 resumeStudySession / applyStudySetup；先顯示設定畫面且不寫入 localStorage
+      stopStudySpeech();
+      session = null;
+      $('#studySetup').hidden = false;
+      $('#studyCard').hidden = true;
+      $('#studyDone').hidden = true;
+    } else if (session?.queue?.length && session.idx < session.queue.length) {
+      // 同一次瀏覽中從其他分頁切回：繼續背
+      $('#studySetup').hidden = true;
+      $('#studyDone').hidden = true;
+      $('#studyCard').hidden = false;
+      showCurrentCard({ skipSpeech: true });
+    } else {
+      resetStudyToSetup();
+    }
+  }
   if (name === 'reader') openReader();
   if (name === 'listen') openListen();
-  touchLastUi(name);
+  // restoring 時由 restoreLastUi 結尾統一 touch，避免先清空 studySession
+  if (!opts.restoring) touchLastUi(name);
 }
 
 function bindNav() {
@@ -1674,7 +1813,9 @@ function bindAdd() {
       saveCards();
       debouncedCloudSave(currentEntry.card);
     }
+    touchLastUi('add');
   });
+  $('#wordInput')?.addEventListener('input', () => touchLastUi('add'));
 }
 
 // 只重新生成指定段落
@@ -2603,6 +2744,7 @@ function openCardDetail(id) {
   modal.hidden = false;
   document.body.classList.add('modal-open');
   $('#modalBody').scrollTop = 0;
+  touchLastUi();
 }
 function closeCardModal() {
   $('#cardModal').hidden = true;
@@ -2610,6 +2752,7 @@ function closeCardModal() {
   modalCardId = null;
   currentEntry = null;
   renderDeck(); // 反映剛剛在彈窗內的編輯
+  touchLastUi();
 }
 function bindCardModal() {
   $('#modalCloseBtn').addEventListener('click', closeCardModal);
@@ -2629,6 +2772,7 @@ function bindCardModal() {
       btn.textContent = '✓ 完成'; btn.dataset.editing = '1';
       $('#modalBody').scrollTop = 0;
     }
+    touchLastUi();
   });
   // 彈窗內：各段重新生成（欄位編輯器與預覽皆適用）／手動編輯整張卡
   $('#modalBody').addEventListener('click', e => {
@@ -2645,7 +2789,7 @@ function bindCardModal() {
 function editCardFull(id) {
   const c = cards.find(x => x.id === id);
   if (!c) return;
-  showView('add');
+  showView('add', { keepAdd: true });
   $('#wordInput').value = c.data.word;
   $('#rawInput').value = c.raw || '';
   renderPreview(c.data, $('#previewArea'), {
@@ -2661,6 +2805,7 @@ function editCardFull(id) {
     ? '（編輯模式）左側為已保存的歐路原文，可修改（自動存檔）；各段可單獨「重新生成」。'
     : '（編輯模式）這張卡沒有保存原文。可在左側貼上歐路內容（自動存檔）後再重新生成各段。';
   pendingCard = null;
+  touchLastUi('add');
   $('#previewArea').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
@@ -2696,6 +2841,7 @@ function renderModeGrid() {
   $$('.mode-item input').forEach(inp => {
     inp.addEventListener('change', () => {
       inp.closest('.mode-item').classList.toggle('on', inp.checked);
+      touchLastUi('study');
     });
   });
 }
@@ -2703,13 +2849,22 @@ function renderModeGrid() {
 function bindStudySetup() {
   $('#startStudyBtn').addEventListener('click', startStudy);
   $('#backToSetupBtn').addEventListener('click', resetStudyToSetup);
+  document.querySelectorAll('input[name="scope"]').forEach(el => {
+    el.addEventListener('change', () => touchLastUi('study'));
+  });
+  $('#studyLimit')?.addEventListener('change', () => touchLastUi('study'));
+  $('#studyLimit')?.addEventListener('input', () => touchLastUi('study'));
+  $('#studyFolder')?.addEventListener('change', () => touchLastUi('study'));
 }
 
 function resetStudyToSetup() {
+  stopStudySpeech();
+  session = null;
   $('#studySetup').hidden = false;
   $('#studyCard').hidden = true;
   $('#studyDone').hidden = true;
   renderModeGrid();
+  touchLastUi('study');
 }
 
 /* =========================================================================
@@ -2760,11 +2915,12 @@ function startStudy() {
   // 限制本次數量
   if (limit > 0 && queue.length > limit) queue = queue.slice(0, limit);
 
-  session = { queue, idx: 0, reviewed: 0, total: queue.length, results: [], modes, scope };
+  session = { queue, idx: 0, reviewed: 0, total: queue.length, results: [], modes, scope, folder, limit };
   $('#studySetup').hidden = true;
   $('#studyDone').hidden = true;
   $('#studyCard').hidden = false;
   showCurrentCard();
+  touchLastUi('study');
 }
 
 function currentItem() { return session.queue[session.idx]; }
@@ -2786,7 +2942,7 @@ function enqueueUnlockedModes(card) {
   });
 }
 
-function showCurrentCard() {
+function showCurrentCard(opts = {}) {
   // 換卡時立刻中斷上一張的朗讀
   stopStudySpeech();
   // 換卡時關閉編輯面板
@@ -2797,7 +2953,14 @@ function showCurrentCard() {
     $('#editCardBtn').textContent = '✏️ 編輯';
   }
   const item = currentItem();
+  if (!item) { resetStudyToSetup(); return; }
   const card = cards.find(c => c.id === item.cardId);
+  if (!card) {
+    session.idx++;
+    if (session.idx >= session.queue.length) finishStudy();
+    else showCurrentCard(opts);
+    return;
+  }
   const mode = STUDY_MODES.find(m => m.id === item.mode);
 
   $('#studyCounter').textContent = `${session.reviewed + 1} / ${session.total}`;
@@ -2823,8 +2986,15 @@ function showCurrentCard() {
       });
     }
   }
-  // 切到新卡：只朗讀題面（不洩漏答案）
-  autoSpeakFront(card.data, item.mode);
+  if (opts.answerShown) {
+    $('#cardBack').hidden = false;
+    $('#showAnswerBtn').hidden = true;
+    $('#rateBtns').hidden = false;
+  } else if (!opts.skipSpeech) {
+    // 切到新卡：只朗讀題面（不洩漏答案）
+    autoSpeakFront(card.data, item.mode);
+  }
+  touchLastUi('study');
 }
 
 function escapeReg(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
@@ -3044,6 +3214,7 @@ function revealAnswer() {
   // 顯示答案：英中交錯×3 → 每句例句×2
   const card = item ? cards.find(c => c.id === item.cardId) : null;
   if (card) autoSpeakBack(card.data);
+  touchLastUi('study');
 }
 
 /* ---- SRS 排程（簡化 SM-2） ---- */
@@ -3125,6 +3296,7 @@ function finishStudy() {
   session = null;
   renderDailyPanel();
   renderDeck();
+  touchLastUi('study');
 }
 
 function renderSummary() {
