@@ -78,7 +78,9 @@ function focusAfterWord(text, word) {
 function stripMdLinks(s) {
   return String(s || '')
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, ' ')
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[\[([^\]]*)\]\]/g, '$1')
+    .replace(/\*+/g, '');
 }
 
 function collinsLooksReal(text, slug) {
