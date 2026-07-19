@@ -6669,6 +6669,10 @@ function safeListenFilename(title) {
     .slice(0, 80) || 'transcript';
 }
 
+function listenItemsWithTranscript() {
+  return (listenItems || []).filter(it => (it.segments || []).length);
+}
+
 function buildListenExportText(item, opts = {}) {
   const segs = (item && item.segments) || [];
   const withZh = !!opts.zh;
@@ -6696,7 +6700,7 @@ function buildListenExportText(item, opts = {}) {
     return lines.join('\n').replace(/\n+$/, '\n');
   }
 
-  // 純文字
+  // 純文字／Word 內文
   const blocks = [];
   segs.forEach((s) => {
     const en = String(s.en || '').trim();
@@ -6712,6 +6716,43 @@ function buildListenExportText(item, opts = {}) {
   return blocks.join('\n\n') + (blocks.length ? '\n' : '');
 }
 
+/** 合併多則為純文字（每則以標題分隔） */
+function buildListenExportCombinedText(items, opts = {}) {
+  return (items || []).map((item, i) => {
+    const body = buildListenExportText(item, { ...opts, fmt: 'txt' }).trim();
+    const head = `${i + 1}. ${item.title || '未命名'}`;
+    return body ? `${head}\n${'='.repeat(Math.min(40, head.length))}\n${body}` : head;
+  }).filter(Boolean).join('\n\n\n') + '\n';
+}
+
+/** Word 可開啟的 HTML（.doc）；全部聽力合併成一份，每則標題分頁 */
+function buildListenExportDocHtml(items, opts = {}) {
+  const sections = (items || []).map((item, idx) => {
+    const body = buildListenExportText(item, { ...opts, fmt: 'txt' });
+    const paras = body.split('\n').map(line => {
+      if (!line.trim()) return '<p style="margin:0 0 4pt">&nbsp;</p>';
+      return `<p style="margin:0 0 6pt;line-height:1.55">${esc(line)}</p>`;
+    }).join('');
+    const pageBreak = idx === 0 ? '' : 'page-break-before:always;';
+    return `<h1 style="font-size:16pt;margin:18pt 0 10pt;${pageBreak}">${esc(item.title || '未命名')}</h1>${paras}`;
+  }).join('');
+  return `<!DOCTYPE html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:w="urn:schemas-microsoft-com:office:word"
+ xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="utf-8" />
+<title>聽力逐字稿</title>
+<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom></w:WordDocument></xml><![endif]-->
+<style>
+body{font-family:Calibri,'Microsoft JhengHei','PingFang TC',sans-serif;font-size:12pt;color:#111}
+h1{font-family:Calibri,'Microsoft JhengHei','PingFang TC',sans-serif;font-size:16pt}
+</style>
+</head>
+<body>${sections}</body>
+</html>`;
+}
+
 function downloadTextFile(filename, text, mime = 'text/plain;charset=utf-8') {
   const blob = new Blob([text], { type: mime });
   const a = document.createElement('a');
@@ -6722,35 +6763,53 @@ function downloadTextFile(filename, text, mime = 'text/plain;charset=utf-8') {
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800);
 }
 
-function openListenExportModal() {
-  const item = listenItems.find(i => i.id === listenCurrentId);
-  if (!item) return;
-  if (!(item.segments || []).length) {
+/**
+ * @param {{ scope?: 'one'|'all' }} [opts]
+ */
+function openListenExportModal(opts = {}) {
+  const modal = $('#listenExportModal');
+  if (!modal) return;
+  const preferAll = opts.scope === 'all';
+  const current = listenItems.find(i => i.id === listenCurrentId);
+  const all = listenItemsWithTranscript();
+
+  if (preferAll) {
+    if (!all.length) { toast('還沒有可匯出的逐字稿', true); return; }
+  } else if (!current || !(current.segments || []).length) {
+    if (all.length) return openListenExportModal({ scope: 'all' });
     toast('目前還沒有逐字稿可匯出', true);
     return;
   }
-  const modal = $('#listenExportModal');
-  if (!modal) return;
+
+  const scopeOne = document.querySelector('input[name="lexScope"][value="one"]');
+  const scopeAll = document.querySelector('input[name="lexScope"][value="all"]');
+  if (scopeOne) {
+    scopeOne.disabled = !current || !(current.segments || []).length;
+    scopeOne.checked = !preferAll && !scopeOne.disabled;
+  }
+  if (scopeAll) {
+    scopeAll.checked = preferAll || (scopeOne && scopeOne.disabled);
+  }
+
   const zhEl = $('#lexZh');
   const tsEl = $('#lexTs');
-  const hasZh = (item.segments || []).some(s => (s.zh || '').trim());
+  const pool = (preferAll || (scopeAll && scopeAll.checked)) ? all : [current].filter(Boolean);
+  const hasZh = pool.some(it => (it.segments || []).some(s => (s.zh || '').trim()));
   if (zhEl) {
     zhEl.checked = false;
     zhEl.disabled = !hasZh;
   }
   if (tsEl) tsEl.checked = false;
-  const txt = document.querySelector('input[name="lexFmt"][value="txt"]');
-  if (txt) txt.checked = true;
-  const hint = $('#lexHint');
-  if (hint) {
-    const src = item.captionSource === 'manual' ? '人工 CC'
-      : item.captionSource === 'auto' ? '自動 CC'
-      : item.captionSource === 'whisper' ? 'Whisper'
-      : '逐字稿';
-    hint.textContent = `「${item.title}」· ${item.segments.length} 句 · 來源 ${src}`
-      + (hasZh ? '' : '（尚無中文翻譯，無法勾選中文）');
-  }
+
+  const preferDoc = preferAll;
+  const docRadio = document.querySelector('input[name="lexFmt"][value="doc"]');
+  const txtRadio = document.querySelector('input[name="lexFmt"][value="txt"]');
+  if (preferDoc && docRadio) docRadio.checked = true;
+  else if (txtRadio) txtRadio.checked = true;
+
+  updateListenExportHint();
   syncListenExportTsUi();
+  syncListenExportFmtByScope();
   modal.hidden = false;
   document.body.classList.add('modal-open');
 }
@@ -6759,6 +6818,53 @@ function closeListenExportModal() {
   const modal = $('#listenExportModal');
   if (modal) modal.hidden = true;
   document.body.classList.remove('modal-open');
+}
+
+function getListenExportScope() {
+  return document.querySelector('input[name="lexScope"]:checked')?.value === 'all' ? 'all' : 'one';
+}
+
+function updateListenExportHint() {
+  const hint = $('#lexHint');
+  if (!hint) return;
+  const scope = getListenExportScope();
+  const all = listenItemsWithTranscript();
+  const current = listenItems.find(i => i.id === listenCurrentId);
+  const pool = scope === 'all' ? all : (current && (current.segments || []).length ? [current] : []);
+  const hasZh = pool.some(it => (it.segments || []).some(s => (s.zh || '').trim()));
+  if (scope === 'all') {
+    hint.textContent = `全部 ${pool.length} 則有逐字稿的聽力，將合併成一個檔`
+      + (hasZh ? '' : '（目前都還沒中文翻譯）');
+  } else if (current) {
+    const src = current.captionSource === 'manual' ? '人工 CC'
+      : current.captionSource === 'auto' ? '自動 CC'
+      : current.captionSource === 'whisper' ? 'Whisper'
+      : '逐字稿';
+    hint.textContent = `「${current.title}」· ${(current.segments || []).length} 句 · 來源 ${src}`
+      + (hasZh ? '' : '（尚無中文翻譯，無法勾選中文）');
+  } else {
+    hint.textContent = '請選擇匯出範圍與格式';
+  }
+  const zhEl = $('#lexZh');
+  if (zhEl) zhEl.disabled = !hasZh;
+}
+
+function syncListenExportFmtByScope() {
+  const scope = getListenExportScope();
+  const allOnly = scope === 'all';
+  document.querySelectorAll('[data-lex-fmt="srt"], [data-lex-fmt="vtt"]').forEach(lab => {
+    lab.style.opacity = allOnly ? '0.45' : '';
+    const inp = lab.querySelector('input');
+    if (inp) {
+      inp.disabled = allOnly;
+      if (allOnly && inp.checked) {
+        const doc = document.querySelector('input[name="lexFmt"][value="doc"]');
+        if (doc) doc.checked = true;
+      }
+    }
+  });
+  syncListenExportTsUi();
+  updateListenExportHint();
 }
 
 function syncListenExportTsUi() {
@@ -6782,35 +6888,79 @@ function getListenExportOpts() {
     zh: !!$('#lexZh')?.checked,
     ts: fmt === 'srt' || fmt === 'vtt' ? true : !!$('#lexTs')?.checked,
     fmt,
+    scope: getListenExportScope(),
   };
 }
 
-async function doListenExport(mode) {
+function getListenExportTargets(opts) {
+  if (opts.scope === 'all') return listenItemsWithTranscript();
   const item = listenItems.find(i => i.id === listenCurrentId);
-  if (!item || !(item.segments || []).length) {
-    toast('目前還沒有逐字稿可匯出', true);
+  return item && (item.segments || []).length ? [item] : [];
+}
+
+async function doListenExport(mode) {
+  const opts = getListenExportOpts();
+  const items = getListenExportTargets(opts);
+  if (!items.length) {
+    toast('沒有可匯出的逐字稿', true);
     return;
   }
-  const opts = getListenExportOpts();
-  if (opts.zh && !(item.segments || []).some(s => (s.zh || '').trim())) {
+  if (opts.zh && !items.some(it => (it.segments || []).some(s => (s.zh || '').trim()))) {
     toast('還沒有中文翻譯，請先翻譯或取消勾選中文', true);
     return;
   }
-  const text = buildListenExportText(item, opts);
+  if ((opts.fmt === 'srt' || opts.fmt === 'vtt') && items.length > 1) {
+    toast('SRT／VTT 僅支援單則，請改選 Word 或純文字', true);
+    return;
+  }
+
+  const tag = ['en', opts.zh ? 'zh' : '', (opts.ts || opts.fmt === 'srt' || opts.fmt === 'vtt') ? 'timed' : '']
+    .filter(Boolean).join('-');
+
+  // Word
+  if (opts.fmt === 'doc') {
+    const html = buildListenExportDocHtml(items, opts);
+    if (mode === 'copy') {
+      try {
+        await navigator.clipboard.writeText(buildListenExportCombinedText(items, opts));
+        toast('已複製文字到剪貼簿（Word 請改用下載）');
+        closeListenExportModal();
+      } catch {
+        toast('複製失敗，請改用下載', true);
+      }
+      return;
+    }
+    const name = items.length === 1
+      ? `${safeListenFilename(items[0].title)}.${tag}.doc`
+      : `聽力逐字稿-全部${items.length}則.${tag}.doc`;
+    downloadTextFile(name, '\ufeff' + html, 'application/msword;charset=utf-8');
+    toast(`已下載 Word（${items.length} 則）`);
+    closeListenExportModal();
+    return;
+  }
+
+  // 單則 srt/vtt/txt，或多則 txt
+  let text = '';
+  let base = '';
+  let ext = 'txt';
+  let mime = 'text/plain;charset=utf-8';
+  if (items.length === 1 && (opts.fmt === 'srt' || opts.fmt === 'vtt' || opts.fmt === 'txt')) {
+    text = buildListenExportText(items[0], opts);
+    base = safeListenFilename(items[0].title);
+    ext = opts.fmt === 'srt' ? 'srt' : opts.fmt === 'vtt' ? 'vtt' : 'txt';
+    mime = opts.fmt === 'srt' ? 'application/x-subrip;charset=utf-8'
+      : opts.fmt === 'vtt' ? 'text/vtt;charset=utf-8'
+      : 'text/plain;charset=utf-8';
+  } else {
+    text = buildListenExportCombinedText(items, opts);
+    base = `聽力逐字稿-全部${items.length}則`;
+    ext = 'txt';
+  }
+
   if (!text.trim()) {
     toast('沒有可匯出的內容', true);
     return;
   }
-  const base = safeListenFilename(item.title);
-  const tag = [
-    'en',
-    opts.zh ? 'zh' : '',
-    (opts.ts || opts.fmt !== 'txt') ? 'timed' : '',
-  ].filter(Boolean).join('-');
-  const ext = opts.fmt === 'srt' ? 'srt' : opts.fmt === 'vtt' ? 'vtt' : 'txt';
-  const mime = opts.fmt === 'srt' ? 'application/x-subrip;charset=utf-8'
-    : opts.fmt === 'vtt' ? 'text/vtt;charset=utf-8'
-    : 'text/plain;charset=utf-8';
 
   if (mode === 'copy') {
     try {
@@ -6823,7 +6973,7 @@ async function doListenExport(mode) {
     return;
   }
   downloadTextFile(`${base}.${tag}.${ext}`, text, mime);
-  toast(`已下載 ${ext.toUpperCase()}`);
+  toast(`已下載 ${ext.toUpperCase()}${items.length > 1 ? `（${items.length} 則）` : ''}`);
   closeListenExportModal();
 }
 
@@ -7200,7 +7350,8 @@ function bindListen() {
   $('#lytUrl')?.addEventListener('keydown', e => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); confirmListenYoutubeModal(); }
   });
-  $('#listenExportBtn')?.addEventListener('click', openListenExportModal);
+  $('#listenExportBtn')?.addEventListener('click', () => openListenExportModal({ scope: 'one' }));
+  $('#listenExportAllBtn')?.addEventListener('click', () => openListenExportModal({ scope: 'all' }));
   $('#lexDownload')?.addEventListener('click', () => doListenExport('download'));
   $('#lexCopy')?.addEventListener('click', () => doListenExport('copy'));
   $('#listenExportModal')?.addEventListener('click', e => {
@@ -7208,6 +7359,9 @@ function bindListen() {
   });
   document.querySelectorAll('input[name="lexFmt"]').forEach(el => {
     el.addEventListener('change', syncListenExportTsUi);
+  });
+  document.querySelectorAll('input[name="lexScope"]').forEach(el => {
+    el.addEventListener('change', syncListenExportFmtByScope);
   });
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && $('#listenYoutubeModal') && !$('#listenYoutubeModal').hidden) closeListenYoutubeModal();

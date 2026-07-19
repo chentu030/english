@@ -299,6 +299,7 @@
               <input type="file" id="listenFile" accept="audio/*,video/*" multiple hidden />
             </label>
             <button class="btn ghost" id="listenYoutubeBtn">▶ 批量 YouTube</button>
+            <button class="btn ghost" id="listenExportAllBtn" type="button" title="把全部聽力逐字稿匯出成一個 Word">⬇ 全部匯出 Word</button>
             <span id="listenBackendState" class="hint"></span>
           </div>
         </div>
@@ -528,6 +529,17 @@
       </div>
       <div class="modal-body">
         <p class="hint" id="lexHint" style="margin-top:0">預設只匯出原文（CC／Whisper）。可再勾選中文與時間戳。</p>
+        <fieldset class="lyt-opts" id="lexScopeWrap">
+          <legend>範圍</legend>
+          <label class="lyt-opt">
+            <input type="radio" name="lexScope" value="one" checked />
+            <span><b>目前這則</b><small>只匯出正在開啟的聽力</small></span>
+          </label>
+          <label class="lyt-opt">
+            <input type="radio" name="lexScope" value="all" />
+            <span><b>全部聽力</b><small>有逐字稿的全部合併成一個檔（適合 Word）</small></span>
+          </label>
+        </fieldset>
         <fieldset class="lyt-opts">
           <legend>內容</legend>
           <label class="lyt-opt">
@@ -536,22 +548,26 @@
           </label>
           <label class="lyt-opt" id="lexTsWrap">
             <input type="checkbox" id="lexTs" />
-            <span><b>加上時間戳</b><small>純文字會標 [分:秒]；字幕格式本來就有時間軸</small></span>
+            <span><b>加上時間戳</b><small>純文字／Word 標 [分:秒]；SRT／VTT 本來就有時間軸</small></span>
           </label>
         </fieldset>
         <fieldset class="lyt-opts">
           <legend>格式</legend>
-          <label class="lyt-opt">
+          <label class="lyt-opt" data-lex-fmt="doc">
+            <input type="radio" name="lexFmt" value="doc" />
+            <span><b>Word (.doc)</b><small>可用 Word／Google 文件開啟；全部匯出首選</small></span>
+          </label>
+          <label class="lyt-opt" data-lex-fmt="txt">
             <input type="radio" name="lexFmt" value="txt" checked />
             <span><b>純文字 (.txt)</b><small>方便閱讀、貼到筆記</small></span>
           </label>
-          <label class="lyt-opt">
+          <label class="lyt-opt" data-lex-fmt="srt">
             <input type="radio" name="lexFmt" value="srt" />
-            <span><b>SubRip (.srt)</b><small>常用影片字幕格式</small></span>
+            <span><b>SubRip (.srt)</b><small>常用影片字幕（僅單則）</small></span>
           </label>
-          <label class="lyt-opt">
+          <label class="lyt-opt" data-lex-fmt="vtt">
             <input type="radio" name="lexFmt" value="vtt" />
-            <span><b>WebVTT (.vtt)</b><small>網頁／部分播放器字幕</small></span>
+            <span><b>WebVTT (.vtt)</b><small>網頁字幕（僅單則）</small></span>
           </label>
         </fieldset>
         <div class="add-btns">
