@@ -176,7 +176,7 @@ function sourcesFor(word) {
       id: 'collins',
       name: '柯林斯 Collins',
       preferJina: true,
-      jinaSelectors: ['.content.definitions', '.dictentry', 'main', 'article'],
+      jinaSelectors: ['.dictentry', '.content.definitions', 'main', 'article'],
       urls: [
         `https://www.collinsdictionary.com/dictionary/english/${q}`,
         `https://www.collinsdictionary.com/dictionary/english-chinese/${q}`,
