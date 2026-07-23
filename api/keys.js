@@ -1,16 +1,26 @@
-// Vercel Serverless Function：把環境變數裡的 Gemini/Vertex 金鑰提供給前端
-// 在 Vercel 專案設定 → Environment Variables 新增（擇一）：
-//   GEMINI_API_KEYS = 金鑰1,金鑰2,金鑰3   （逗號或換行分隔）
-//   或多組 GEMINI_API_KEY_1 / GEMINI_API_KEY_2 / GEMINI_API_KEY_3
-module.exports = (req, res) => {
-  const raw =
-    process.env.GEMINI_API_KEYS ||
-    process.env.VERTEX_API_KEYS ||
-    [process.env.GEMINI_API_KEY_1, process.env.GEMINI_API_KEY_2, process.env.GEMINI_API_KEY_3, process.env.GEMINI_API_KEY]
-      .filter(Boolean)
-      .join(',') ||
-    '';
-  const keys = raw.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
-  res.setHeader('Cache-Control', 'no-store');
-  res.status(200).json({ keys });
+/** Status of server Vertex keys — never returns raw key material. */
+const { parseKeysFromEnv, requireUser, setNoStore } = require("./_auth");
+
+module.exports = async (req, res) => {
+  setNoStore(res);
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", req.headers.origin || "*");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    return res.status(204).end();
+  }
+  if (req.method !== "GET") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const user = await requireUser(req, res, { rateMax: 30 });
+  if (!user) return;
+
+  const keys = parseKeysFromEnv();
+  return res.status(200).json({
+    configured: keys.length > 0,
+    count: keys.length,
+    // Back-compat: empty array so old clients cannot harvest keys
+    keys: [],
+  });
 };

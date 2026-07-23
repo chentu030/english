@@ -134,18 +134,40 @@ const DEFAULT_SETTINGS = {
 let keyIndex = 0;          // 金鑰輪詢游標
 
 // 環境變數金鑰（部署時由 Vercel Serverless /api/keys 提供）；設定頁手動輸入者優先
-let envKeys = [];
+let serverAiReady = false;
+const SERVER_KEY_SENTINEL = '__server__';
 function activeKeys() {
   const s = (settings.apiKeys || []).filter(Boolean);
-  return s.length ? s : envKeys.filter(Boolean);
+  if (s.length) return s;
+  return serverAiReady ? [SERVER_KEY_SENTINEL] : [];
+}
+async function authHeaders(extra = {}) {
+  const headers = { ...extra };
+  const u = window.Auth && window.Auth.user;
+  if (!u) throw new Error('請先登入後再使用 AI／詞典功能');
+  const token = await u.getIdToken();
+  headers.Authorization = `Bearer ${token}`;
+  return headers;
 }
 async function loadEnvKeys() {
   try {
-    const res = await fetch('/api/keys', { cache: 'no-store' });
-    if (!res.ok) return;
+    if (!window.Auth || !window.Auth.user) {
+      serverAiReady = false;
+      return;
+    }
+    const res = await fetch('/api/keys', {
+      cache: 'no-store',
+      headers: await authHeaders(),
+    });
+    if (!res.ok) {
+      serverAiReady = false;
+      return;
+    }
     const data = await res.json();
-    if (Array.isArray(data.keys)) envKeys = data.keys.filter(Boolean);
-  } catch { /* 本機或未部署時忽略 */ }
+    serverAiReady = !!(data.configured && (data.count || 0) > 0);
+  } catch {
+    serverAiReady = false;
+  }
 }
 
 /* ---------------------- 狀態 ---------------------- */
@@ -305,13 +327,13 @@ async function geminiTTSChunk(text, preferredKey) {
     for (let attempt = 0; attempt < keys.length; attempt++) {
       const key = keys[attempt];
       try {
-        const url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
-        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (!res.ok) {
-          if ([429, 500, 502, 503, 504].includes(res.status)) continue; // 換金鑰
-          break; // 這個模型不行（如 400/404），換下一個模型
+        let data;
+        try {
+          data = await requestGemini(key, body, model);
+        } catch (e) {
+          if (e && e.retryable) continue;
+          break;
         }
-        const data = await res.json();
         const part = data?.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
         if (!part) break;
         const rate = parseInt((part.inlineData.mimeType || '').match(/rate=(\d+)/)?.[1] || '24000', 10);
@@ -444,7 +466,7 @@ function resolveTtsCard(el) {
 async function uploadTtsWavBlob(blob, filename = 'card-tts.wav') {
   const fd = new FormData();
   fd.append('file', new File([blob], filename, { type: 'audio/wav' }));
-  const res = await fetch(listenBackend() + '/beidanzi/store_audio', { method: 'POST', body: fd });
+  const res = await listenAuthFetch('/beidanzi/store_audio', { method: 'POST', body: fd });
   if (!res.ok) throw new Error('上傳失敗 ' + res.status);
   const j = await res.json();
   if (!j?.url) throw new Error('未回傳網址');
@@ -524,7 +546,7 @@ async function speakGeminiTTS(text, el) {
     }
   }
 
-  if (!activeKeys().length) { toast('尚未設定 API 金鑰', true); return; }
+  if (!activeKeys().length) { toast('尚未就緒（請登入或到設定填入金鑰）', true); return; }
   if (ttsBusy) return;
   ttsBusy = true;
   toast('🤖 AI 生成語音中…');
@@ -854,6 +876,7 @@ async function onAuthChanged(u) {
   renderModeGrid();
   if (window.Cloud && window.Cloud.enabled) startCloud();
   syncHistory();
+  void loadEnvKeys();
   showGate(false);
   restoreLastUi();
 }
@@ -1396,8 +1419,12 @@ async function fetchOnlineDictRaw(word, onStatus) {
   if (!w || currentLang !== 'en') return '';
   const report = (msg) => { if (typeof onStatus === 'function') onStatus(msg); };
 
-  const tryJson = async (url) => {
-    const res = await fetch(url, { cache: 'no-store' });
+    const tryJson = async (url) => {
+    const headers = {};
+    if (window.Auth && window.Auth.user) {
+      headers.Authorization = `Bearer ${await window.Auth.user.getIdToken()}`;
+    }
+    const res = await fetch(url, { cache: 'no-store', headers });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
     if (j && j.text) return j;
@@ -1645,23 +1672,37 @@ ${rawBlock(raw)}
 // 一律使用 Vertex AI 通道（aiplatform.googleapis.com）。
 // 嚴禁使用 Gemini 通道（generativelanguage.googleapis.com），因無法使用 GCP 抵免額。
 function endpointFor(key, model) {
-  return `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+  return `https://aiplatform.googleapis.com/v1beta1/publishers/google/models/${encodeURIComponent(model)}:generateContent`;
 }
 
-// 單次請求（指定金鑰）
 async function requestGemini(key, body, model) {
-  const url = endpointFor(key, model || settings.model);
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const m = model || settings.model;
+  let res;
+  if (!key || key === SERVER_KEY_SENTINEL) {
+    res = await fetch('/api/ai', {
+      method: 'POST',
+      headers: await authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ model: m, body }),
+    });
+  } else {
+    res = await fetch(endpointFor(key, m), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': key,
+      },
+      body: JSON.stringify(body),
+    });
+  }
   if (!res.ok) {
     let detail = '';
-    try { const j = await res.json(); detail = j.error?.message || ''; } catch {}
+    try {
+      const j = await res.json();
+      detail = j.error?.message || j.error || '';
+      if (typeof detail !== 'string') detail = JSON.stringify(detail);
+    } catch {}
     const err = new Error(`回應錯誤 (${res.status})${detail ? '：' + detail : ''}`);
     err.status = res.status;
-    // 額度/限流/伺服器錯誤 → 可換下一把金鑰重試
     err.retryable = [429, 500, 502, 503, 504].includes(res.status);
     throw err;
   }
@@ -1686,7 +1727,7 @@ function releaseSlot() {
 // 產生單一段落的 JSON（含金鑰輪詢、重試、併發限制）
 async function generateJSON(promptText, schema, opts = {}) {
   const keys = activeKeys();
-  if (keys.length === 0) throw new Error('尚未設定 API 金鑰，請到「設定」填入。');
+  if (keys.length === 0) throw new Error('尚未就緒：請登入，或到「設定」填入金鑰。');
   const body = {
     contents: [{ role: 'user', parts: [{ text: promptText }] }],
     generationConfig: {
@@ -3374,7 +3415,7 @@ function bindSettings() {
     renderDailyPanel();
     $('#settingsStatus').textContent = settings.apiKeys.length
       ? `✅ 已儲存（${settings.apiKeys.length} 組金鑰）`
-      : (envKeys.length ? `✅ 已儲存（使用 Vercel 環境變數 ${envKeys.length} 組）` : '✅ 已儲存（尚無金鑰）');
+      : (serverAiReady ? '✅ 已儲存（使用伺服器安全金鑰）' : '✅ 已儲存（尚無金鑰）');
     toast('設定已儲存');
     setTimeout(() => $('#settingsStatus').textContent = '', 2500);
   });
@@ -4158,7 +4199,7 @@ async function readerPlayAI(book, a) {
   const src = readerAudioSrc(a);
   if (src) { readerPlayUrl(src, a.audioCues); return; }
   if (readerTtsBusy) { toast('AI 語音生成中，請稍候…'); return; }
-  if (!activeKeys().length) { toast('尚未設定 API 金鑰', true); return; }
+  if (!activeKeys().length) { toast('尚未就緒（請登入或到設定填入金鑰）', true); return; }
   const jobs = ttsJobsFromArticle(a);
   if (!jobs.length) { toast('沒有內容可朗讀', true); return; }
 
@@ -4239,7 +4280,7 @@ async function readerPlayAI(book, a) {
     try {
       const fd = new FormData();
       fd.append('file', new File([blob], 'article.wav', { type: 'audio/wav' }));
-      const res = await fetch(listenBackend() + '/beidanzi/store_audio', { method: 'POST', body: fd });
+      const res = await listenAuthFetch('/beidanzi/store_audio', { method: 'POST', body: fd });
       if (!res.ok) throw new Error('狀態 ' + res.status);
       const j = await res.json();
       a.audioUrl = j.url;
@@ -5085,7 +5126,7 @@ function fileToBase64(file) {
 // 泛用 Gemini 請求（支援圖片；含金鑰輪詢與併發限制）
 async function geminiGenerate(parts, cfg = {}) {
   const keys = activeKeys();
-  if (!keys.length) throw new Error('尚未設定 API 金鑰，請到「設定」填入。');
+  if (!keys.length) throw new Error('尚未就緒：請登入，或到「設定」填入金鑰。');
   const body = {
     contents: [{ role: 'user', parts }],
     generationConfig: {
@@ -5433,6 +5474,15 @@ let listenMediaEl = null;
 let listenPollTimer = null;
 let listenActiveIdx = -1;
 let listenPlayerId = null; // 目前播放器對應的 item id，避免重複重建
+
+
+async function listenAuthFetch(path, init = {}) {
+  const headers = new Headers(init.headers || {});
+  if (window.Auth && window.Auth.user) {
+    headers.set('Authorization', `Bearer ${await window.Auth.user.getIdToken()}`);
+  }
+  return fetch(listenBackend() + path, { ...init, headers });
+}
 
 function listenBackend() { return (settings.listenBackend || 'https://whisper-api-1016448029865.asia-east1.run.app/api').replace(/\/$/, ''); }
 function listenLangCode() {
@@ -6099,7 +6149,7 @@ async function listenForceCc(item) {
     // 不帶 force_whisper → 後端優先 CC
     // 雲端 IP 常被 YouTube 擋，後端可能要換路徑／代理，通常數十秒；若前面還有 Whisper／批次佇列會更久
     showStage('抓 CC 中（雲端直連常被擋，可能需數十秒）…');
-    const res = await fetch(listenBackend() + '/beidanzi/youtube', { method: 'POST', body: fd });
+    const res = await listenAuthFetch('/beidanzi/youtube', { method: 'POST', body: fd });
     if (!res.ok) throw new Error('後端回應錯誤 ' + res.status);
     const j = await res.json();
     if (j.captionSource === 'whisper' || j.usedWhisper) {
@@ -6160,7 +6210,7 @@ async function listenForceWhisper(item) {
     fd.append('url', 'https://www.youtube.com/watch?v=' + item.videoId);
     fd.append('language', listenWhisperLang());
     fd.append('force_whisper', '1');
-    const res = await fetch(listenBackend() + '/beidanzi/youtube', { method: 'POST', body: fd });
+    const res = await listenAuthFetch('/beidanzi/youtube', { method: 'POST', body: fd });
     if (!res.ok) throw new Error('後端回應錯誤 ' + res.status);
     const j = await res.json();
     item.captionSource = j.captionSource || 'whisper';
@@ -6216,7 +6266,7 @@ async function listenUploadFile(file, opts = {}) {
     const fd = new FormData();
     fd.append('file', file);
     fd.append('language', listenWhisperLang());
-    const res = await fetch(listenBackend() + '/beidanzi/upload', { method: 'POST', body: fd });
+    const res = await listenAuthFetch('/beidanzi/upload', { method: 'POST', body: fd });
     if (!res.ok) throw new Error('後端回應錯誤 ' + res.status);
     const j = await res.json();
     item.mediaUrl = j.mediaUrl || '';
@@ -6265,7 +6315,7 @@ async function listenAddYoutube(url, opts = {}) {
     fd.append('url', url);
     fd.append('language', listenWhisperLang());
     if (forceWhisper) fd.append('force_whisper', '1');
-    const res = await fetch(listenBackend() + '/beidanzi/youtube', { method: 'POST', body: fd });
+    const res = await listenAuthFetch('/beidanzi/youtube', { method: 'POST', body: fd });
     if (!res.ok) throw new Error('後端回應錯誤 ' + res.status);
     const j = await res.json();
     item.videoId = j.videoId || vid;
@@ -7128,14 +7178,16 @@ function renderListenPlayer(item) {
       });
     });
   } else if (item.kind === 'file' && item.mediaUrl) {
-    const src = item.mediaUrl;
-    if (item.mediaType === 'video') {
-      box.classList.remove('audio-only');
-      box.innerHTML = `<video id="lsMedia" controls src="${src}"></video>`;
-    } else {
-      box.classList.add('audio-only');
-      box.innerHTML = `<audio id="lsMedia" controls src="${src}"></audio>`;
-    }
+    const src = String(item.mediaUrl || '');
+    const safe = /^(https?:|blob:|data:audio\/|data:video\/)/i.test(src) ? src : '';
+    box.innerHTML = '';
+    const el = document.createElement(item.mediaType === 'video' ? 'video' : 'audio');
+    el.id = 'lsMedia';
+    el.controls = true;
+    if (safe) el.src = safe;
+    if (item.mediaType === 'video') box.classList.remove('audio-only');
+    else box.classList.add('audio-only');
+    box.appendChild(el);
     listenMediaEl = $('#lsMedia');
     listenMediaEl.addEventListener('timeupdate', () => listenSetActiveByTime(listenMediaEl.currentTime));
   } else {

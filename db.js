@@ -45,6 +45,10 @@ window.Auth = {
     catch (e) { console.error('Google 登入失敗', e); alert('登入失敗：' + (e?.message || e)); }
   },
   async signOut() { if (auth) { try { await signOut(auth); } catch (e) { console.error(e); } } },
+  async getIdToken(force) {
+    if (!auth || !auth.currentUser) throw new Error('尚未登入');
+    return auth.currentUser.getIdToken(!!force);
+  },
   onChange(cb) {
     if (!auth) { cb(null); return () => {}; }
     return onAuthStateChanged(auth, u => { window.Auth.user = u; cb(u); });

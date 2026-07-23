@@ -359,11 +359,19 @@ async function fetchFreeDictSource(word) {
   }
 }
 
+const { requireUser, setNoStore } = require('./_auth');
+
 module.exports = async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  setNoStore(res);
+  const origin = req.headers.origin || '';
+  if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  res.setHeader('Vary', 'Origin');
   if (req.method === 'OPTIONS') return res.status(204).end();
+
+  const user = await requireUser(req, res, { rateMax: 40 });
+  if (!user) return;
 
   const word = String(req.query?.word || '').trim();
   const slug = slugWord(word);

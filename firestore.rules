@@ -1,6 +1,7 @@
 rules_version = '2';
 
 // 貼到 Firebase Console → Firestore Database → 規則(Rules) → 發布
+// Private per-uid data only; no public share_tokens.
 service cloud.firestore {
   match /databases/{database}/documents {
 
